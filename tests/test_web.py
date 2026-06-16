@@ -1,5 +1,6 @@
 """Tests for the in-memory analysis path and the web portal backend."""
 
+import json
 import os
 import sys
 import unittest
@@ -92,7 +93,51 @@ class TestWebBackend(unittest.TestCase):
     def test_read_samples_bundled(self):
         samples = _read_samples()
         self.assertTrue(samples)
-        self.assertGreaterEqual(len(samples[0]["files"]), 4)
+        # first sample is the packet-capture CSV, then the tinc logs
+        labels = [s["label"] for s in samples]
+        self.assertIn("packet capture (tshark CSV)", labels)
+
+
+FLOW_CSV = (
+    "frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,ip.proto,frame.len\n"
+    '"Jun 16, 2026 14:07:00.1 KST",10.94.40.36,10.93.168.39,665,41884,6,138\n'
+    '"Jun 16, 2026 14:07:00.2 KST",10.93.168.39,10.94.40.36,41884,665,6,66\n'
+)
+
+
+class TestWebFlowMode(unittest.TestCase):
+    def test_flow_csv_detected_and_analysed(self):
+        res = analyze_payload({"files": [{"name": "network.csv", "content": FLOW_CSV}]})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mode"], "flow")
+        self.assertEqual(res["data"]["meta"]["hosts"], 2)
+        # one deduplicated conversation, TCP/665 service detected factually
+        self.assertEqual(res["data"]["meta"]["conversations"], 1)
+        self.assertEqual(res["data"]["services"][0]["port"], 665)
+        self.assertIn("conversations_csv", res["exports"])
+
+    def test_aggregated_report_json_passthrough(self):
+        from tinc_route_analyzer import flowcsv
+        analysis, stats = flowcsv.analyze_flow_texts([("network.csv", None, FLOW_CSV)])
+        report = json.dumps(flowcsv.to_dict(analysis, stats))
+        res = analyze_payload({"files": [{"name": "report.json", "content": report}]})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mode"], "flow")
+        self.assertTrue(res.get("fromReport"))
+        self.assertEqual(res["data"]["meta"]["hosts"], 2)
+
+    def test_oversized_csv_redirects_to_cli(self):
+        big = ("frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,ip.proto,frame.len\n"
+               '"Jun 16, 2026 14:07:00.1 KST",10.0.0.1,10.0.0.2,665,40000,6,100\n'
+               + "#" * (65 * 1024 * 1024))
+        res = analyze_payload({"files": [{"name": "big.csv", "content": big}]})
+        self.assertFalse(res["ok"])
+        self.assertIn("tinc-flow-analyzer", res["error"])
+
+    def test_tinc_still_routed_to_tinc_mode(self):
+        res = analyze_payload({"files": [
+            {"name": "linux_hq.log", "node": "hq", "content": HQ_LOG}]})
+        self.assertEqual(res["mode"], "tinc")
 
 
 if __name__ == "__main__":

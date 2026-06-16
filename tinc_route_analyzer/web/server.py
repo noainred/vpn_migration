@@ -18,7 +18,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
-from .. import reporter
+from .. import flowcsv, reporter
 from ..analyzer import analyze_texts
 from ..parser import DEFAULT_YEAR
 
@@ -29,6 +29,9 @@ SAMPLES_DIR = os.path.join(
     "samples",
 )
 MAX_BODY = 256 * 1024 * 1024  # 256 MiB upload guard
+# Browser uploads stream the whole file into memory, so cap direct CSV analysis;
+# above this, users run the streaming CLI and upload the small report.json.
+MAX_INLINE_CSV = 64 * 1024 * 1024
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -39,37 +42,85 @@ _CONTENT_TYPES = {
 }
 
 
+def _flow_exports(data) -> dict:
+    return {
+        "conversations_csv": flowcsv.render_conversations_csv(data),
+        "policies_csv": flowcsv.render_policies_csv(data),
+        "hosts_csv": flowcsv.render_hosts_csv(data),
+        "dot": flowcsv.render_dot(data),
+    }
+
+
+def _try_flow_report(content: str):
+    """Return a parsed flow report dict if ``content`` is one, else ``None``.
+
+    This is the path for very large captures: the user processes them with the
+    streaming CLI (``tinc-flow-analyzer -f json``) and uploads the small
+    ``report.json`` here for visualisation.
+    """
+    if not content or content.lstrip()[:1] != "{":
+        return None
+    try:
+        obj = json.loads(content)
+    except ValueError:
+        return None
+    if isinstance(obj, dict) and obj.get("mode") == "flow" \
+            and "conversations" in obj and "hosts" in obj:
+        return obj
+    return None
+
+
 def analyze_payload(payload: dict) -> dict:
     """Pure analysis entry point used by the HTTP handler (and tests).
 
-    Expected payload::
-
-        {
-          "files": [{"name": "...", "node": "", "content": "..."}, ...],
-          "subnetDump": "optional tinc dump subnets text",
-          "hostMap": {"oshost": "node"},
-          "year": 2026
-        }
+    Accepts three kinds of input and auto-detects which: a pre-aggregated flow
+    report (report.json from the CLI), a tshark/Wireshark packet CSV, or tinc
+    log files.
     """
     files = payload.get("files") or []
     if not files:
         return {"ok": False, "error": "no files provided"}
 
     items = [
-        (f.get("name") or "upload.log", (f.get("node") or "").strip() or None,
+        (f.get("name") or "upload", (f.get("node") or "").strip() or None,
          f.get("content") or "")
         for f in files
     ]
+
+    # 1) pre-aggregated flow report.json -> visualise as-is (no re-analysis).
+    for _name, _node, content in items:
+        report = _try_flow_report(content)
+        if report is not None:
+            return {"ok": True, "mode": "flow", "fromReport": True,
+                    "data": report,
+                    "summaryText": flowcsv.render_summary(report),
+                    "exports": _flow_exports(report)}
+
+    # 2) tshark/Wireshark packet CSV -> flow analysis (guarded for size).
+    if any(flowcsv.looks_like_flow_csv(c) for _n, _no, c in items):
+        total = sum(len(c) for _n, _no, c in items)
+        if total > MAX_INLINE_CSV:
+            return {"ok": False, "error": (
+                f"capture is {total/1e6:.0f} MB — too large to analyse through "
+                "the browser. Process it server-side with the streaming CLI and "
+                "upload the resulting report.json here:\n"
+                "  tinc-flow-analyzer -j 4 -f json -o report.json yourcapture.csv")}
+        analysis, stats = flowcsv.analyze_flow_texts(items)
+        data = flowcsv.to_dict(analysis, stats)
+        return {"ok": True, "mode": "flow", "data": data,
+                "summaryText": flowcsv.render_summary(analysis, stats),
+                "exports": _flow_exports(analysis)}
+
+    # 3) tinc VPN logs (the original input type).
     host_map = payload.get("hostMap") or None
     year = int(payload.get("year") or DEFAULT_YEAR)
     subnet_dump = payload.get("subnetDump")
     subnet_dump_texts = [subnet_dump] if subnet_dump else None
-
     analysis, stats = analyze_texts(
         items, host_map=host_map, year=year, subnet_dump_texts=subnet_dump_texts)
-
     return {
         "ok": True,
+        "mode": "tinc",
         "stats": stats,
         "data": reporter.to_dict(analysis, stats),
         "summaryText": reporter.render_summary(analysis, stats),
@@ -81,30 +132,41 @@ def analyze_payload(payload: dict) -> dict:
     }
 
 
-def _read_samples() -> list:
-    out = []
+def _read_text(name: str) -> Optional[str]:
+    path = os.path.join(SAMPLES_DIR, name)
     try:
-        names = sorted(os.listdir(SAMPLES_DIR))
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
     except OSError:
-        return out
+        return None
+
+
+def _read_samples() -> list:
+    """Return ready-to-analyse sample payloads for the portal's demo button.
+
+    Primary sample is the tshark packet-capture CSV (the real use case); the
+    tinc log sample is offered as a secondary entry.
+    """
+    samples = []
+    csv_text = _read_text("network.csv")
+    if csv_text is not None:
+        samples.append({"label": "packet capture (tshark CSV)",
+                        "files": [{"name": "network.csv", "node": "",
+                                   "content": csv_text}], "subnetDump": ""})
+    tinc_files = []
+    try:
+        names = sorted(n for n in os.listdir(SAMPLES_DIR) if n.endswith(".log"))
+    except OSError:
+        names = []
     for name in names:
-        if not name.endswith(".log"):
-            continue
-        path = os.path.join(SAMPLES_DIR, name)
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                out.append({"name": name, "node": "", "content": fh.read()})
-        except OSError:
-            continue
-    dump_path = os.path.join(SAMPLES_DIR, "dump_subnets.txt")
-    subnet_dump = ""
-    if os.path.exists(dump_path):
-        try:
-            with open(dump_path, "r", encoding="utf-8", errors="replace") as fh:
-                subnet_dump = fh.read()
-        except OSError:
-            subnet_dump = ""
-    return [{"files": out, "subnetDump": subnet_dump}]
+        text = _read_text(name)
+        if text is not None:
+            tinc_files.append({"name": name, "node": "", "content": text})
+    if tinc_files:
+        samples.append({"label": "tinc VPN logs",
+                        "files": tinc_files,
+                        "subnetDump": _read_text("dump_subnets.txt") or ""})
+    return samples
 
 
 class Handler(BaseHTTPRequestHandler):

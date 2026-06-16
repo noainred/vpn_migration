@@ -20,17 +20,19 @@
   <main class="layout">
     <!-- Control panel -->
     <section class="panel controls">
-      <h2>1. 로그 업로드</h2>
+      <h2>1. 파일 업로드</h2>
       <div id="dropzone" class="dropzone">
-        <p><strong>로그 파일을 끌어다 놓거나</strong> 클릭하여 선택</p>
-        <p class="hint">여러 OS(Linux/Windows/macOS)의 tinc 로그 다중 선택 가능 · .log .txt</p>
-        <input id="fileInput" type="file" multiple accept=".log,.txt,text/plain" hidden />
+        <p><strong>파일을 끌어다 놓거나</strong> 클릭하여 선택</p>
+        <p class="hint">tshark 캡처 CSV · 사전 집계 report.json · tinc 로그<br>.csv .json .log .txt — 다중 선택 가능</p>
+        <input id="fileInput" type="file" multiple accept=".log,.txt,.csv,.json,text/plain,application/json" hidden />
       </div>
+      <p class="hint bignote">수십 GB 캡처는 서버에서 스트리밍 CLI로 처리 후 결과 JSON만 업로드하세요:<br>
+        <code>tinc-flow-analyzer -j 4 -f json -o report.json capture.csv</code></p>
 
       <ul id="fileList" class="filelist"></ul>
 
       <details class="advanced">
-        <summary>고급 옵션 (서브넷 덤프 · 호스트 매핑 · 연도)</summary>
+        <summary>고급 옵션 — tinc 로그 전용 (서브넷 덤프 · 호스트 매핑 · 연도)</summary>
         <label class="field">
           <span>서브넷 소유 정보 (<code>tinc dump subnets</code> 출력, 선택)</span>
           <textarea id="subnetDump" rows="3" placeholder="10.20.2.0/24 owner branch2"></textarea>
@@ -61,6 +63,7 @@
         <button class="tab active" data-tab="status">수집상태</button>
         <button class="tab" data-tab="graph">토폴로지</button>
         <button class="tab" data-tab="hosts">호스트 정보</button>
+        <button class="tab" data-tab="conv">통신쌍</button>
         <button class="tab" data-tab="policies">수집된 정책</button>
         <button class="tab" data-tab="routing">라우팅</button>
       </nav>
@@ -76,15 +79,11 @@
 
       <div class="tabpanel active" id="tab-status"></div>
       <div class="tabpanel" id="tab-graph">
-        <div class="legend">
-          <span><i class="sw solid"></i> 직접 연결</span>
-          <span><i class="sw dashed"></i> 중계(멀티홉)</span>
-          <span><i class="sw node-log"></i> 로그 수집 노드</span>
-          <span><i class="sw node-peer"></i> 피어로만 관측</span>
-        </div>
+        <div class="legend" id="graphLegend"></div>
         <div id="graph" class="graph"></div>
       </div>
       <div class="tabpanel" id="tab-hosts"></div>
+      <div class="tabpanel" id="tab-conv"></div>
       <div class="tabpanel" id="tab-policies"></div>
       <div class="tabpanel" id="tab-routing"></div>
     </section>

@@ -11,37 +11,87 @@
 > node owns** — exactly the inputs you need to recreate connectivity and
 > firewall policy on NSX.
 
-- 의존성 없음 (Python 3.8+ 표준 라이브러리만 사용)
-- 여러 OS의 로그 포맷(BSD syslog / ISO·journald / macOS / Windows 콘솔)을 모두 처리
-- **웹 포탈** + CLI 두 가지 사용 방식
-- 사람이 읽는 요약 + CSV / JSON / Graphviz(DOT) 출력
+두 가지 입력을 지원합니다:
+
+1. **tshark/Wireshark 패킷 캡처 CSV** — 실제 트래픽을 캡처해 분석(주 사용 경로,
+   **수십 GB** 스트리밍 처리). `A→B`와 `B→A`는 하나의 통신쌍으로 중복 제거.
+2. **tinc VPN 로그** — 기존 VPN의 연결/서브넷/중계 정보 분석.
+
+- 의존성 없음 (Python 3.8+ 표준 라이브러리만) · 폐쇄망/에어갭 동작 · 외부 CDN 없음
+- **웹 포탈**(시각화) + **스트리밍 CLI**(대용량 처리)
+- 출력: 수집상태 · 호스트 · 통신쌍 · 수집된 정책(NSX 허용 규칙) · 라우팅 + CSV/JSON/DOT
 
 ---
 
-## 🚀 웹 포탈 (권장) — 브라우저로 편리하게
+## 📦 패킷 캡처(tshark CSV) 분석 — 대용량(수십 GB)
+
+캡처 (예: 사용자 명령):
+
+```bash
+tshark -i ens192 -T fields -E header=y -E separator=, \
+  -e frame.time -e ip.src -e ip.dst -e tcp.srcport -e tcp.dstport \
+  -e ip.proto -e frame.len > network.csv
+```
+
+분석 (데이터가 있는 서버에서 스트리밍 처리, `.gz`·glob·병렬 지원):
+
+```bash
+# 사람이 읽는 요약
+python3 -m tinc_route_analyzer.flowcsv samples/network.csv
+
+# 수십 GB: 병렬 처리(-j) + 진행률, 결과를 작은 report.json 으로 저장
+python3 -m tinc_route_analyzer.flowcsv -j 4 --progress -f json -o report.json '/caps/*.csv.gz'
+
+# 정책(NSX 허용 규칙) CSV만 추출
+python3 -m tinc_route_analyzer.flowcsv -f policies-csv network.csv > policies.csv
+```
+
+그런 다음 **웹 포탈에 `report.json`을 업로드**하면 시각화됩니다(아래).
+
+### 설계 — 왜 수십 GB가 되는가 (측정값 기반, 추정 아님)
+- **단일 패스 스트리밍.** 캡처 전체를 메모리에 올리지 않습니다.
+- **메모리는 패킷 수가 아니라 네트워크 카디널리티(호스트/통신쌍/서비스/서브넷)에
+  비례.** 측정: 300만 패킷 처리 시 최대 RSS **약 13–22 MB**.
+- **병렬(-j)은 정확한 라인 경계로 분할**하여 순차 결과와 **비트 단위로 동일**함을
+  검증(경계에서 누락/중복 없음).
+- 측정 처리량(4코어): 순차 ≈ 0.12 M pkt/s, `-j 4` ≈ 0.34 M pkt/s(**3.7×**,
+  `--no-time` 시), 30 GB 외삽 ≈ **약 14분**(코어 수에 따라 선형 단축).
+
+### 근거 기반 서비스(리스닝 포트) 판정 — 추측 배제
+서버 포트는 **IANA RFC 6335 포트 범위**(시스템 ≤1023, 등록 1024–49151, 동적
+≥49152)와 OS 에페메럴 범위(Linux 32768–60999) 사실로 판정합니다. 두 포트가 같은
+범주라 발신자를 주소만으로 알 수 없으면(캡처에 TCP 플래그 없음) **판정하지 않고**
+정책을 만들지 않습니다. 각 서비스에는 **실제 관측된 서로 다른 클라이언트 수**를
+근거로 함께 표기합니다. (예: `network.csv`에서 `10.94.40.36:TCP/665`는 4개
+클라이언트, `10.95.113.39:TCP/665`는 1개 클라이언트가 관측됨.)
+
+---
+
+## 🚀 웹 포탈 — 브라우저로 편리하게
 
 ```bash
 python3 -m tinc_route_analyzer.web --port 8080
 # 브라우저에서 http://localhost:8080 접속
 ```
 
-1. tinc 로그 파일을 **끌어다 놓거나** 선택 → (필요 시 파일별 노드명 지정) → **[분석하기]**
-2. 결과를 탭으로 확인:
-   - **수집상태** — 파일별 인식 이벤트 수, 관측 기간, 로그 수집/피어관측 노드
-   - **호스트 정보** — 노드별 물리주소(터널 엔드포인트)·소유 서브넷·송수신량
-   - **수집된 정책** — 통신 노드 쌍 → NSX 허용 규칙 후보(양측 서브넷 포함)
-   - **라우팅** — 멀티홉/중계 경로, "직접 터널 없음" 구간 표시
-   - **토폴로지** — 직접(실선)/중계(점선) 그래프
-3. **Export**: JSON · Flows CSV · 정책 CSV · Graphviz DOT · 요약 TXT 다운로드
+1. 파일을 **끌어다 놓거나** 선택 → **[분석하기]**. 입력 종류는 자동 감지됩니다:
+   - 패킷 캡처 **CSV**(작은 샘플) · 사전 집계 **report.json**(대용량 결과) · **tinc 로그**
+2. 결과를 탭으로 확인 (입력 종류에 맞게 표시):
+   - **수집상태** — 파일별 인식 패킷/이벤트, 프로토콜 분포, 관측 기간
+   - **호스트 정보** — IP/서브넷·역할(서버/클라이언트)·제공 서비스·송수신량
+   - **통신쌍** — `A↔B` 중복 제거 + 방향별(A→B, B→A) 분리 표기
+   - **수집된 정책** — 서비스(proto/port) → NSX 허용 규칙(서버·출발 서브넷·근거)
+   - **라우팅** — 서브넷 간 매트릭스(그룹 단위 NSX 정책) / (tinc는 중계 경로)
+   - **토폴로지** — 호스트·통신 그래프
+3. **Export**: JSON · 통신쌍 CSV · 정책 CSV · 호스트 CSV · Graphviz DOT
 
-- **[예제 불러오기]** 버튼으로 동봉된 멀티 OS 예제를 즉시 분석해 볼 수 있습니다.
-- 모든 분석은 **로컬에서 표준 라이브러리만으로** 수행되고, 외부 CDN을 전혀
-  사용하지 않으므로 **폐쇄망/에어갭 환경**에서도 그대로 동작합니다.
-- 기본 바인딩은 안전하게 `127.0.0.1` 입니다. 원격 서버에서 띄워 접속하려면
-  `--host 0.0.0.0` (또는 SSH 포트 포워딩)을 사용하세요.
+- **[예제 불러오기]** 로 동봉된 실제 형식 캡처(`network.csv`)를 즉시 분석합니다.
+- 분석은 **로컬·표준 라이브러리·CDN 없음** → 폐쇄망/에어갭에서 동작.
+- 기본 바인딩은 `127.0.0.1`. 원격 접속은 `--host 0.0.0.0` 또는 SSH 포워딩.
 
-> 브라우저가 파일을 읽어 JSON으로 전송 → 서버가 분석해 결과/그래프를 반환하는
-> 구조라, 서버는 멀티파트 업로드 파싱 없이 동작합니다.
+> **대용량 캡처는 포탈에 직접 올리지 마세요.** 브라우저 직접 분석은 64 MB로 제한되며
+> 초과 시 CLI 사용을 안내합니다. 권장 흐름: 서버에서
+> `tinc-flow-analyzer -j 4 -f json -o report.json capture.csv` → 포탈에 `report.json` 업로드.
 
 ---
 
@@ -152,8 +202,14 @@ python3 -m tinc_route_analyzer -f json -o report.json samples/*.log
 ### (선택) 설치해서 명령어로 사용
 ```bash
 pip install -e .
-tinc-route-analyzer samples/*.log
+tinc-flow-analyzer  network.csv        # 패킷 캡처 CSV(대용량)
+tinc-route-analyzer samples/*.log      # tinc 로그
+tinc-route-analyzer-web --port 8080    # 웹 포탈
 ```
+
+> 패킷 캡처 CSV 전용 옵션은 `python3 -m tinc_route_analyzer.flowcsv -h` 참고
+> (`-j/--workers`, `--no-time`, `--progress`, `.gz`/glob 입력,
+> 포맷: summary/hosts/services/subnets/json/conversations-csv/policies-csv/hosts-csv/dot).
 
 ---
 
@@ -198,12 +254,19 @@ tincd -n <netname> -d5
 ---
 
 ## 6. 가정과 한계 (Assumptions & limitations)
-- 타임스탬프는 **표기된 벽시계 값 그대로**(타임존 제거) 비교합니다. 오프셋이
-  다른 여러 타임존 로그를 섞어 상관분석하려면 미리 UTC 등으로 통일하세요.
-- 패킷 바이트 수는 `Sending/Received` 로그 기준의 *추정치*이며, `Forwarding`
-  로그에는 크기가 없어 중계 구간은 패킷 수만 집계합니다.
-- 스위치 모드(L2)의 MAC 학습 로그도 인식하지만, 라우터 모드(L3, 서브넷 기반)
-  환경을 주 대상으로 설계되었습니다.
+**패킷 캡처(CSV)**
+- 캡처에 TCP 플래그가 없으므로, 양쪽 포트가 같은 범주면 발신자(서버)를 주소만으로
+  **단정하지 않고** 서비스/정책을 만들지 않습니다(근거 기반). 필요하면 캡처에
+  `-e tcp.flags` 를 추가하면 SYN 기반 판정을 더 강화할 수 있습니다(향후 옵션).
+- 열 순서는 헤더(`-E header=y`)가 있으면 헤더로, 없으면 위 예시 순서를 가정합니다.
+  UDP 포트만 캡처한 경우 `-e udp.srcport -e udp.dstport` 도 자동 인식합니다.
+- 단일 지점 캡처에는 경로(홉) 정보가 없어 "라우팅"은 서브넷 간 관계로 표현합니다.
+- 서브넷 그룹화는 IPv4 `/24` 기준입니다(다른 마스크가 필요하면 알려주세요).
+
+**tinc 로그**
+- 타임스탬프는 **표기된 벽시계 값 그대로**(타임존 제거) 비교합니다.
+- 바이트 수는 `Sending/Received` 기준 추정치이며 `Forwarding`(중계)은 패킷 수만 집계.
+- L3(서브넷 기반) 라우터 모드를 주 대상으로 설계(L2 MAC 학습도 인식).
 
 ---
 
@@ -211,23 +274,26 @@ tincd -n <netname> -d5
 
 ```
 tinc_route_analyzer/
-  parser.py     로그 한 줄 → LogEvent (접두사 분리 + 메시지 패턴 매칭)
+  flowcsv.py    tshark 캡처 CSV: 스트리밍 파싱 → 통신쌍(중복제거)·호스트·서비스·
+                서브넷 집계 + 병렬 엔진(merge) + 리포트 + CLI
+  parser.py     tinc 로그 한 줄 → LogEvent (접두사 분리 + 메시지 패턴 매칭)
   models.py     LogEvent / FlowStats / NodeInfo 데이터 모델
-  analyzer.py   이벤트 집계 → 노드·플로우·중계·서브넷
-                (analyze_files: 파일 / analyze_texts: 메모리·웹용)
-  reporter.py   summary/pairs/policies/routes/flows/nodes/subnets/csv/json/dot 렌더러
-  cli.py        명령행 인터페이스
-  web/          웹 포탈 (표준 라이브러리 http.server)
-    server.py     라우팅 + analyze_payload() (순수 함수, 테스트 대상)
-    static/       index.html · style.css · app.js (외부 의존성 없음)
-samples/        여러 OS 포맷의 예제 로그 + dump_subnets.txt
-tests/          parser/analyzer/web 단위·통합 테스트 (python -m unittest)
+  analyzer.py   tinc 이벤트 집계 (analyze_files: 파일 / analyze_texts: 메모리·웹용)
+  reporter.py   tinc 렌더러(summary/pairs/policies/routes/.../csv/json/dot)
+  cli.py        tinc 로그 CLI
+  web/          웹 포탈 (표준 라이브러리 http.server, CDN 없음)
+    server.py     라우팅 + analyze_payload() — 입력 자동 감지(flow JSON/CSV/tinc)
+    static/       index.html · style.css · app.js (모드별 렌더링)
+samples/        network.csv(실제 캡처 형식) + tinc 예제 로그 + dump_subnets.txt
+tests/          flowcsv/parser/analyzer/web 테스트 (python -m unittest)
+CLAUDE.md       엔지니어링 원칙(근거 기반·대용량 설계) — 세션 간 유지
 ```
 
 실행:
 
 ```bash
-python3 -m tinc_route_analyzer.web --port 8080   # 웹 포탈
-python3 -m tinc_route_analyzer samples/*.log     # CLI
-python3 -m unittest discover -s tests            # 테스트(34건)
+python3 -m tinc_route_analyzer.web --port 8080      # 웹 포탈(시각화)
+python3 -m tinc_route_analyzer.flowcsv -j4 network.csv   # 패킷 캡처 CLI(대용량)
+python3 -m tinc_route_analyzer samples/*.log        # tinc 로그 CLI
+python3 -m unittest discover -s tests               # 테스트(54건)
 ```

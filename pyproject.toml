@@ -16,6 +16,7 @@ dependencies = []
 
 [project.scripts]
 tinc-route-analyzer = "tinc_route_analyzer.cli:main"
+tinc-flow-analyzer = "tinc_route_analyzer.flowcsv:main"
 tinc-route-analyzer-web = "tinc_route_analyzer.web.server:main"
 
 [tool.setuptools]
