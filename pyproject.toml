@@ -16,6 +16,10 @@ dependencies = []
 
 [project.scripts]
 tinc-route-analyzer = "tinc_route_analyzer.cli:main"
+tinc-route-analyzer-web = "tinc_route_analyzer.web.server:main"
 
 [tool.setuptools]
-packages = ["tinc_route_analyzer"]
+packages = ["tinc_route_analyzer", "tinc_route_analyzer.web"]
+
+[tool.setuptools.package-data]
+"tinc_route_analyzer.web" = ["static/*"]

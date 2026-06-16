@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tinc → NSX VPN 마이그레이션 포탈</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⇄</span>
+      <div>
+        <h1>tinc → NSX VPN 마이그레이션 포탈</h1>
+        <p class="sub">tinc 로그를 업로드하면 노드 간 트래픽 · 라우팅 경로 · 정책 후보를 분석합니다</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Control panel -->
+    <section class="panel controls">
+      <h2>1. 로그 업로드</h2>
+      <div id="dropzone" class="dropzone">
+        <p><strong>로그 파일을 끌어다 놓거나</strong> 클릭하여 선택</p>
+        <p class="hint">여러 OS(Linux/Windows/macOS)의 tinc 로그 다중 선택 가능 · .log .txt</p>
+        <input id="fileInput" type="file" multiple accept=".log,.txt,text/plain" hidden />
+      </div>
+
+      <ul id="fileList" class="filelist"></ul>
+
+      <details class="advanced">
+        <summary>고급 옵션 (서브넷 덤프 · 호스트 매핑 · 연도)</summary>
+        <label class="field">
+          <span>서브넷 소유 정보 (<code>tinc dump subnets</code> 출력, 선택)</span>
+          <textarea id="subnetDump" rows="3" placeholder="10.20.2.0/24 owner branch2"></textarea>
+        </label>
+        <label class="field">
+          <span>호스트 매핑 (OS호스트명=노드명, 줄바꿈 구분, 선택)</span>
+          <textarea id="hostMap" rows="2" placeholder="win-pc01=branch2"></textarea>
+        </label>
+        <label class="field inline">
+          <span>연도(타임스탬프에 연도 없을 때)</span>
+          <input id="year" type="number" value="2026" min="1970" max="2100" />
+        </label>
+      </details>
+
+      <div class="actions">
+        <button id="btnAnalyze" class="primary">분석하기</button>
+        <button id="btnSample" class="ghost">예제 불러오기</button>
+        <button id="btnClear" class="ghost">초기화</button>
+      </div>
+      <p id="msg" class="msg"></p>
+    </section>
+
+    <!-- Results -->
+    <section id="results" class="panel results hidden">
+      <div class="overview" id="overview"></div>
+
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="status">수집상태</button>
+        <button class="tab" data-tab="graph">토폴로지</button>
+        <button class="tab" data-tab="hosts">호스트 정보</button>
+        <button class="tab" data-tab="policies">수집된 정책</button>
+        <button class="tab" data-tab="routing">라우팅</button>
+      </nav>
+
+      <div class="exportbar">
+        <span>Export:</span>
+        <button class="chip" id="btnJson">JSON</button>
+        <button class="chip" id="btnFlowsCsv">Flows CSV</button>
+        <button class="chip" id="btnPoliciesCsv">정책 CSV</button>
+        <button class="chip" id="btnDot">Graphviz DOT</button>
+        <button class="chip" id="btnSummary">요약 TXT</button>
+      </div>
+
+      <div class="tabpanel active" id="tab-status"></div>
+      <div class="tabpanel" id="tab-graph">
+        <div class="legend">
+          <span><i class="sw solid"></i> 직접 연결</span>
+          <span><i class="sw dashed"></i> 중계(멀티홉)</span>
+          <span><i class="sw node-log"></i> 로그 수집 노드</span>
+          <span><i class="sw node-peer"></i> 피어로만 관측</span>
+        </div>
+        <div id="graph" class="graph"></div>
+      </div>
+      <div class="tabpanel" id="tab-hosts"></div>
+      <div class="tabpanel" id="tab-policies"></div>
+      <div class="tabpanel" id="tab-routing"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    표준 라이브러리만으로 동작 · 외부 CDN 없음 · 모든 분석은 로컬에서 수행됩니다
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

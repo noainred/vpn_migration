@@ -10,8 +10,8 @@ from . import reporter
 from .analyzer import analyze_files
 from .parser import DEFAULT_YEAR
 
-_FORMATS = ["summary", "nodes", "pairs", "flows", "routes", "subnets",
-            "csv", "json", "dot"]
+_FORMATS = ["summary", "nodes", "pairs", "policies", "flows", "routes",
+            "subnets", "csv", "policies-csv", "json", "dot"]
 
 
 def _parse_kv(values: Optional[List[str]], what: str) -> dict:
@@ -100,6 +100,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         text = reporter.render_nodes(analysis)
     elif fmt == "pairs":
         text = reporter.render_pairs(analysis, top=args.top)
+    elif fmt == "policies":
+        text = reporter.render_policies(analysis)
+    elif fmt == "policies-csv":
+        text = reporter.render_policies_csv(analysis)
     elif fmt == "flows":
         text = reporter.render_flows(analysis, top=args.top)
     elif fmt == "routes":

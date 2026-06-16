@@ -13,11 +13,39 @@
 
 - 의존성 없음 (Python 3.8+ 표준 라이브러리만 사용)
 - 여러 OS의 로그 포맷(BSD syslog / ISO·journald / macOS / Windows 콘솔)을 모두 처리
+- **웹 포탈** + CLI 두 가지 사용 방식
 - 사람이 읽는 요약 + CSV / JSON / Graphviz(DOT) 출력
 
 ---
 
-## 1. 빠르게 실행해 보기 (Quick start)
+## 🚀 웹 포탈 (권장) — 브라우저로 편리하게
+
+```bash
+python3 -m tinc_route_analyzer.web --port 8080
+# 브라우저에서 http://localhost:8080 접속
+```
+
+1. tinc 로그 파일을 **끌어다 놓거나** 선택 → (필요 시 파일별 노드명 지정) → **[분석하기]**
+2. 결과를 탭으로 확인:
+   - **수집상태** — 파일별 인식 이벤트 수, 관측 기간, 로그 수집/피어관측 노드
+   - **호스트 정보** — 노드별 물리주소(터널 엔드포인트)·소유 서브넷·송수신량
+   - **수집된 정책** — 통신 노드 쌍 → NSX 허용 규칙 후보(양측 서브넷 포함)
+   - **라우팅** — 멀티홉/중계 경로, "직접 터널 없음" 구간 표시
+   - **토폴로지** — 직접(실선)/중계(점선) 그래프
+3. **Export**: JSON · Flows CSV · 정책 CSV · Graphviz DOT · 요약 TXT 다운로드
+
+- **[예제 불러오기]** 버튼으로 동봉된 멀티 OS 예제를 즉시 분석해 볼 수 있습니다.
+- 모든 분석은 **로컬에서 표준 라이브러리만으로** 수행되고, 외부 CDN을 전혀
+  사용하지 않으므로 **폐쇄망/에어갭 환경**에서도 그대로 동작합니다.
+- 기본 바인딩은 안전하게 `127.0.0.1` 입니다. 원격 서버에서 띄워 접속하려면
+  `--host 0.0.0.0` (또는 SSH 포트 포워딩)을 사용하세요.
+
+> 브라우저가 파일을 읽어 JSON으로 전송 → 서버가 분석해 결과/그래프를 반환하는
+> 구조라, 서버는 멀티파트 업로드 파싱 없이 동작합니다.
+
+---
+
+## 1. CLI 빠르게 실행해 보기 (Quick start)
 
 ```bash
 # 동봉된 예제 로그로 바로 실행
@@ -94,7 +122,8 @@ python3 -m tinc_route_analyzer [옵션] LOGFILE [LOGFILE ...]
   --node NAME=FILE      접두사(호스트네임)가 없는 로그 파일의 노드명을 지정 (반복 가능)
   --host-map OSHOST=NODE OS 호스트네임 → tinc 노드명 변환 (반복 가능)
   --subnets-dump FILE   'tinc dump subnets' 출력으로 서브넷→소유자 매핑 보강 (반복 가능)
-  -f, --format FORMAT   summary(기본) | nodes | pairs | flows | routes | subnets | csv | json | dot
+  -f, --format FORMAT   summary(기본) | nodes | pairs | policies | flows |
+                        routes | subnets | csv | policies-csv | json | dot
   -o, --output FILE     stdout 대신 파일로 저장
   --top N               pair/flow 표를 상위 N개로 제한
   --year YYYY           연도가 없는 BSD syslog 타임스탬프에 사용할 연도(기본: 올해)
@@ -103,10 +132,12 @@ python3 -m tinc_route_analyzer [옵션] LOGFILE [LOGFILE ...]
 ### 출력 포맷
 - `summary` — 사람이 읽는 종합 리포트(개요·노드·통신쌍·경로·서브넷)
 - `pairs` — 통신 노드 쌍 = NSX 정책 후보 (마이그레이션의 핵심 산출물)
+- `policies` — 통신 쌍을 NSX 허용 규칙(양측 서브넷/엔드포인트 포함)으로 변환
 - `routes` — 멀티홉/중계 경로. NSX에서 직접 연결을 만들어야 하는 구간 표시
 - `flows` — 방향별 상세 플로우(송신/수신/중계 카운트)
 - `nodes` / `subnets` — 노드·서브넷 인벤토리
 - `csv` — 방향별 플로우 표(스프레드시트/추가 가공용)
+- `policies-csv` — 정책(허용 규칙) 표 CSV (NSX 반입용 가공 기반)
 - `json` — 전체 구조화 데이터(자동화/NSX 정책 생성 파이프라인용)
 - `dot` — Graphviz 그래프. 실선=직접, 점선=중계, 점선 박스=로그가 없는 노드
 
@@ -182,9 +213,21 @@ tincd -n <netname> -d5
 tinc_route_analyzer/
   parser.py     로그 한 줄 → LogEvent (접두사 분리 + 메시지 패턴 매칭)
   models.py     LogEvent / FlowStats / NodeInfo 데이터 모델
-  analyzer.py   이벤트 집계 → 노드·플로우·중계·서브넷 + analyze_files()
-  reporter.py   summary/pairs/routes/flows/nodes/subnets/csv/json/dot 렌더러
+  analyzer.py   이벤트 집계 → 노드·플로우·중계·서브넷
+                (analyze_files: 파일 / analyze_texts: 메모리·웹용)
+  reporter.py   summary/pairs/policies/routes/flows/nodes/subnets/csv/json/dot 렌더러
   cli.py        명령행 인터페이스
+  web/          웹 포탈 (표준 라이브러리 http.server)
+    server.py     라우팅 + analyze_payload() (순수 함수, 테스트 대상)
+    static/       index.html · style.css · app.js (외부 의존성 없음)
 samples/        여러 OS 포맷의 예제 로그 + dump_subnets.txt
-tests/          parser/analyzer 단위·통합 테스트 (python -m unittest)
+tests/          parser/analyzer/web 단위·통합 테스트 (python -m unittest)
+```
+
+실행:
+
+```bash
+python3 -m tinc_route_analyzer.web --port 8080   # 웹 포탈
+python3 -m tinc_route_analyzer samples/*.log     # CLI
+python3 -m unittest discover -s tests            # 테스트(34건)
 ```

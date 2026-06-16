@@ -235,6 +235,42 @@ class Analysis:
         return sorted(self.nodes.values(), key=lambda n: n.name)
 
 
+def _new_stats() -> dict:
+    return {"files": 0, "lines": 0, "events": 0, "unparsed_files": [], "sources": []}
+
+
+def _ingest(
+    analysis: Analysis,
+    stats: dict,
+    name: str,
+    node: Optional[str],
+    lines: list,
+    *,
+    host_map: Optional[dict],
+    year: int,
+) -> None:
+    """Parse one source's lines into ``analysis`` and record per-file stats."""
+    default_node = node or _node_from_filename(name)
+    before = analysis.total_events
+    for _lineno, ev in iter_events(
+        lines,
+        default_node=default_node,
+        host_map=host_map,
+        year=year,
+        source_file=os.path.basename(name),
+    ):
+        analysis.add_event(ev)
+        stats["events"] += 1
+    stats["files"] += 1
+    stats["lines"] += len(lines)
+    stats["sources"].append({
+        "name": os.path.basename(name),
+        "node": default_node,
+        "lines": len(lines),
+        "events": analysis.total_events - before,
+    })
+
+
 def analyze_files(
     file_specs: Iterable[Tuple[str, Optional[str]]],
     *,
@@ -242,14 +278,14 @@ def analyze_files(
     year: int = DEFAULT_YEAR,
     subnet_dumps: Optional[Iterable[str]] = None,
 ) -> Tuple[Analysis, dict]:
-    """Parse and analyse a collection of log files.
+    """Parse and analyse a collection of log files on disk.
 
     ``file_specs`` is an iterable of ``(path, node_name_or_None)``.  The node
     name is used as the observing node for lines without a syslog hostname.
     Returns ``(analysis, stats)`` where ``stats`` reports parse coverage.
     """
     analysis = Analysis()
-    stats = {"files": 0, "lines": 0, "events": 0, "unparsed_files": []}
+    stats = _new_stats()
 
     for path, node in file_specs:
         try:
@@ -258,22 +294,36 @@ def analyze_files(
         except OSError as exc:  # pragma: no cover - surfaced to the caller
             stats["unparsed_files"].append((path, str(exc)))
             continue
-        stats["files"] += 1
-        stats["lines"] += len(lines)
-        default_node = node or _node_from_filename(path)
-        for _lineno, ev in iter_events(
-            lines,
-            default_node=default_node,
-            host_map=host_map,
-            year=year,
-            source_file=os.path.basename(path),
-        ):
-            analysis.add_event(ev)
-            stats["events"] += 1
+        _ingest(analysis, stats, path, node, lines, host_map=host_map, year=year)
 
     if subnet_dumps:
         for dump_path in subnet_dumps:
             _load_subnet_dump(analysis, dump_path)
+
+    return analysis, stats
+
+
+def analyze_texts(
+    items: Iterable[Tuple[str, Optional[str], str]],
+    *,
+    host_map: Optional[dict] = None,
+    year: int = DEFAULT_YEAR,
+    subnet_dump_texts: Optional[Iterable[str]] = None,
+) -> Tuple[Analysis, dict]:
+    """Analyse in-memory log content (used by the web portal).
+
+    ``items`` is an iterable of ``(name, node_or_None, text)``.  Returns
+    ``(analysis, stats)`` just like :func:`analyze_files`.
+    """
+    analysis = Analysis()
+    stats = _new_stats()
+
+    for name, node, text in items:
+        lines = (text or "").splitlines()
+        _ingest(analysis, stats, name, node, lines, host_map=host_map, year=year)
+
+    for text in subnet_dump_texts or []:
+        _load_subnet_dump_lines(analysis, (text or "").splitlines())
 
     return analysis, stats
 
@@ -287,18 +337,23 @@ def _node_from_filename(path: str) -> Optional[str]:
     return stem or None
 
 
-def _load_subnet_dump(analysis: Analysis, path: str) -> None:
-    """Load authoritative subnet ownership from ``tinc dump subnets`` output.
+def _load_subnet_dump_lines(analysis: Analysis, lines: Iterable[str]) -> None:
+    """Load subnet ownership from ``tinc dump subnets`` lines.
 
     Expected line format: ``<subnet> owner <node>`` (extra columns ignored).
     """
+    for raw in lines:
+        parts = raw.split()
+        if len(parts) >= 3 and parts[1] == "owner":
+            subnet, owner = parts[0], parts[2]
+            analysis.subnets[subnet] = owner
+            analysis._node(owner).subnets.add(subnet)
+
+
+def _load_subnet_dump(analysis: Analysis, path: str) -> None:
+    """Load authoritative subnet ownership from a ``tinc dump subnets`` file."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
-                parts = raw.split()
-                if len(parts) >= 3 and parts[1] == "owner":
-                    subnet, owner = parts[0], parts[2]
-                    analysis.subnets[subnet] = owner
-                    analysis._node(owner).subnets.add(subnet)
+            _load_subnet_dump_lines(analysis, fh.readlines())
     except OSError:
         pass

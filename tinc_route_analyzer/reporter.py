@@ -170,6 +170,77 @@ def render_summary(analysis: Analysis, stats: Optional[dict] = None,
     return "\n".join(parts)
 
 
+# --- derived policy view (NSX migration) -----------------------------------
+
+def policies(analysis: Analysis) -> list[dict]:
+    """Turn observed communication pairs into proposed allow-policies.
+
+    Each policy carries both endpoints' owned subnets and physical addresses,
+    so it maps directly onto an NSX firewall rule / IP Set pair.
+    """
+    out = []
+    for p in analysis.communication_pairs():
+        a, b = p["a"], p["b"]
+        na = analysis.nodes.get(a)
+        nb = analysis.nodes.get(b)
+        out.append({
+            "name": f"allow-{a}-{b}",
+            "a": a,
+            "b": b,
+            "a_subnets": sorted(na.subnets) if na else [],
+            "b_subnets": sorted(nb.subnets) if nb else [],
+            "a_endpoints": sorted(na.real_addresses) if na else [],
+            "b_endpoints": sorted(nb.real_addresses) if nb else [],
+            "action": "ALLOW",
+            "packets": p["packets"],
+            "bytes": p["bytes"],
+            "path": ("direct" if p["direct_link"] and not p["via"]
+                     else ("via " + ", ".join(sorted(p["via"])) if p["via"]
+                           else "indirect")),
+            "relayed": bool(p["via"]) or p["forwarded_packets"] > 0,
+            "directions": sorted(p["directions"]),
+            "first_seen": _fmt_dt(p["first_seen"]),
+            "last_seen": _fmt_dt(p["last_seen"]),
+        })
+    return out
+
+
+def render_policies(analysis: Analysis) -> str:
+    rows = []
+    for pol in policies(analysis):
+        rows.append([
+            pol["name"],
+            f"{pol['a']} <-> {pol['b']}",
+            ", ".join(pol["a_subnets"]) or "-",
+            ", ".join(pol["b_subnets"]) or "-",
+            pol["action"],
+            str(pol["packets"]),
+            _fmt_bytes(pol["bytes"]),
+            pol["path"],
+        ])
+    return ("Collected policies (proposed NSX allow rules)\n" + _table(
+        ["policy", "pair", "subnets A", "subnets B", "action",
+         "packets", "bytes", "path"], rows))
+
+
+def render_policies_csv(analysis: Analysis) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["policy", "node_a", "node_b", "a_subnets", "b_subnets",
+                "a_endpoints", "b_endpoints", "action", "packets", "bytes",
+                "path", "relayed", "first_seen", "last_seen"])
+    for pol in policies(analysis):
+        w.writerow([
+            pol["name"], pol["a"], pol["b"],
+            "|".join(pol["a_subnets"]), "|".join(pol["b_subnets"]),
+            "|".join(pol["a_endpoints"]), "|".join(pol["b_endpoints"]),
+            pol["action"], pol["packets"], pol["bytes"], pol["path"],
+            "yes" if pol["relayed"] else "no",
+            pol["first_seen"], pol["last_seen"],
+        ])
+    return buf.getvalue()
+
+
 # --- machine-readable formats ----------------------------------------------
 
 def render_csv(analysis: Analysis) -> str:
@@ -246,6 +317,7 @@ def to_dict(analysis: Analysis, stats: Optional[dict] = None) -> dict:
         "nodes": [node_dict(n) for n in analysis.sorted_nodes()],
         "flows": [flow_dict(f) for f in analysis.sorted_flows()],
         "communication_pairs": [pair_dict(p) for p in analysis.communication_pairs()],
+        "policies": policies(analysis),
         "relays": {relay: {f"{s}->{d}": c for (s, d), c in counter.items()}
                    for relay, counter in analysis.relays.items()},
         "subnets": analysis.subnets,
