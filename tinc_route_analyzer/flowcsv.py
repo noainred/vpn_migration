@@ -204,14 +204,23 @@ class FlowRecord:
 
 
 def _column_map(first_row: list) -> Optional[dict]:
-    """If ``first_row`` is a tshark header, return {internal_key: index}."""
+    """If ``first_row`` is a tshark header, return {internal_key: index}.
+
+    When a key has two source columns (e.g. tcp.srcport and udp.srcport both
+    map to ``sport``), the second is recorded as ``<key>2`` so the parser can
+    fall back to it for the other transport.
+    """
     if not any("." in cell for cell in first_row):
         return None
     cmap = {}
     for i, cell in enumerate(first_row):
         key = _FIELD_ALIASES.get(cell.strip())
-        if key and key not in cmap:
+        if not key:
+            continue
+        if key not in cmap:
             cmap[key] = i
+        elif key + "2" not in cmap:
+            cmap[key + "2"] = i
     return cmap or None
 
 
@@ -222,6 +231,8 @@ def _emit(reader, cmap: dict, parse_times: bool) -> Iterator[FlowRecord]:
     i_dst = cmap.get("dst", -1)
     i_sport = cmap.get("sport", -1)
     i_dport = cmap.get("dport", -1)
+    i_sport2 = cmap.get("sport2", -1)   # e.g. udp port when tcp is primary
+    i_dport2 = cmap.get("dport2", -1)
     i_proto = cmap.get("proto", -1)
     i_len = cmap.get("length", -1)
     want_time = parse_times and i_time >= 0
@@ -234,11 +245,15 @@ def _emit(reader, cmap: dict, parse_times: bool) -> Iterator[FlowRecord]:
         if not src or not dst:
             continue
         proto = _to_int(row[i_proto]) if 0 <= i_proto < n else None
+        sport = _to_int(row[i_sport]) if 0 <= i_sport < n else None
+        if sport is None and 0 <= i_sport2 < n:
+            sport = _to_int(row[i_sport2])
+        dport = _to_int(row[i_dport]) if 0 <= i_dport < n else None
+        if dport is None and 0 <= i_dport2 < n:
+            dport = _to_int(row[i_dport2])
         yield FlowRecord(
             time=parse_time(row[i_time]) if want_time and i_time < n else None,
-            src=src, dst=dst,
-            sport=_to_int(row[i_sport]) if 0 <= i_sport < n else None,
-            dport=_to_int(row[i_dport]) if 0 <= i_dport < n else None,
+            src=src, dst=dst, sport=sport, dport=dport,
             proto=proto if proto is not None else 0,
             length=(_to_int(row[i_len]) or 0) if 0 <= i_len < n else 0,
         )
@@ -886,6 +901,57 @@ def render_subnets(data) -> str:
         ["subnet pair", "packets", "bytes", "host pairs", "services"], rows)
 
 
+def render_live(data, elapsed: float, pps: float, top: int = 15) -> str:
+    """A refreshing terminal dashboard for live capture (clears the screen)."""
+    d = _as_dict(data)
+    m = d["meta"]
+    out = ["\033[2J\033[H",  # clear screen + cursor home
+           f"=== live flow monitor ===   elapsed {elapsed:.0f}s   {pps:,.0f} pkt/s",
+           f"packets {m['packets']:,}  bytes {_fmt_bytes(m['bytes'])}  "
+           f"hosts {m['hosts']}  conversations {m['conversations']}  "
+           f"services {m['services']}", ""]
+    out.append(f"Top conversations (A<->B deduplicated)")
+    out.append(_table(["pair", "packets", "bytes", "services"],
+        [[f"{c['a']} <-> {c['b']}", f"{c['packets']:,}", _fmt_bytes(c["bytes"]),
+          ", ".join(s["label"] for s in c["services"]) or "-"]
+         for c in d["conversations"][:top]]).rstrip("\n"))
+    out.append("")
+    out.append("Top services (proposed NSX allow-policies)")
+    out.append(_table(["service", "server", "#clients", "packets", "bytes"],
+        [[s["service"], s["server"], str(s["client_count"]),
+          f"{s['packets']:,}", _fmt_bytes(s["bytes"])]
+         for s in d["services"][:top]]).rstrip("\n"))
+    out.append("\n(Ctrl+C to stop)")
+    return "\n".join(out) + "\n"
+
+
+def run_live(lines: Iterable[str], *, interval: float = 2.0, top: int = 15,
+             parse_times: bool = True, out=None) -> "FlowAnalysis":
+    """Consume a live line stream, refreshing the dashboard every ``interval``."""
+    import sys
+    import time
+    out = out or sys.stdout
+    analysis = FlowAnalysis()
+    start = time.time()
+    last_t, last_p = start, 0
+    try:
+        for rec in iter_flow_records(lines, parse_times=parse_times):
+            analysis.add_record(rec)
+            now = time.time()
+            if now - last_t >= interval:
+                pps = (analysis.packets - last_p) / (now - last_t)
+                out.write(render_live(analysis, now - start, pps, top))
+                out.flush()
+                last_t, last_p = now, analysis.packets
+    except KeyboardInterrupt:
+        pass
+    now = time.time()
+    pps = (analysis.packets - last_p) / max(1e-9, now - last_t)
+    out.write(render_live(analysis, now - start, pps, top))
+    out.flush()
+    return analysis
+
+
 def main(argv=None) -> int:
     import argparse
     import glob
@@ -903,10 +969,15 @@ def main(argv=None) -> int:
             "examples:\n"
             "  tinc-flow-analyzer network.csv\n"
             "  tinc-flow-analyzer --progress -f json -o report.json '/caps/*.csv.gz'\n"
-            "  tinc-flow-analyzer -f policies-csv network.csv > policies.csv\n\n"
+            "  tinc-flow-analyzer -f policies-csv network.csv > policies.csv\n"
+            "  tshark -i tun0 -l -T fields -E header=y -E separator=, \\\n"
+            "      -e frame.time -e ip.src -e ip.dst -e tcp.srcport -e tcp.dstport \\\n"
+            "      -e udp.srcport -e udp.dstport -e ip.proto -e frame.len \\\n"
+            "    | tinc-flow-analyzer --stdin --live\n\n"
             "Upload the resulting report.json to the web portal to visualise it."))
-    p.add_argument("inputs", nargs="+", metavar="CSV",
-                   help="capture CSV file(s); globs and .gz are supported")
+    p.add_argument("inputs", nargs="*", metavar="CSV",
+                   help="capture CSV file(s); globs and .gz are supported "
+                        "(omit when using --stdin)")
     p.add_argument("-f", "--format", default="summary", choices=[
         "summary", "hosts", "services", "subnets", "json",
         "conversations-csv", "policies-csv", "hosts-csv", "dot"])
@@ -914,6 +985,14 @@ def main(argv=None) -> int:
     p.add_argument("-j", "--workers", type=int, default=1, metavar="N",
                    help="parallel workers; splits inputs into exact chunks "
                         "(default: 1)")
+    p.add_argument("--stdin", action="store_true",
+                   help="read the capture CSV from standard input (pipe from tshark)")
+    p.add_argument("--live", action="store_true",
+                   help="live dashboard: refresh the view every --interval seconds")
+    p.add_argument("--interval", type=float, default=2.0, metavar="SEC",
+                   help="live refresh interval in seconds (default: 2)")
+    p.add_argument("--top", type=int, default=15, metavar="N",
+                   help="rows shown in the live dashboard (default: 15)")
     p.add_argument("--no-time", action="store_true",
                    help="skip per-packet timestamp parsing for max throughput "
                         "(drops the time-span/duration columns)")
@@ -921,20 +1000,40 @@ def main(argv=None) -> int:
                    help="print packet-processing progress to stderr")
     args = p.parse_args(argv)
 
+    use_stdin = args.stdin or args.inputs == ["-"]
+    if not args.inputs and not use_stdin:
+        p.error("no input given (provide CSV file(s) or --stdin)")
+
     paths = []
-    for pat in args.inputs:
-        matched = sorted(glob.glob(pat))
-        paths.extend(matched or [pat])
+    if not use_stdin:
+        for pat in args.inputs:
+            matched = sorted(glob.glob(pat))
+            paths.extend(matched or [pat])
+
+    # Live dashboard mode (typically piped from `tshark -l`).
+    if args.live:
+        src = sys.stdin if use_stdin else itertools.chain.from_iterable(
+            _open_lines(pp) for pp in paths)
+        run_live(src, interval=args.interval, top=args.top,
+                 parse_times=not args.no_time)
+        return 0
 
     def prog(n, path):
         print(f"\r[flow] {n:,} packets processed ({os.path.basename(path)})",
               end="", file=sys.stderr, flush=True)
 
-    analysis, stats = analyze_flow_files(
-        paths, workers=max(1, args.workers), parse_times=not args.no_time,
-        progress=prog if args.progress else None)
-    if args.progress:
-        print("", file=sys.stderr)
+    if use_stdin:
+        analysis = FlowAnalysis()
+        for rec in iter_flow_records(sys.stdin, parse_times=not args.no_time):
+            analysis.add_record(rec)
+        stats = {"files": 1, "records": analysis.packets,
+                 "sources": [{"name": "<stdin>", "records": analysis.packets}]}
+    else:
+        analysis, stats = analyze_flow_files(
+            paths, workers=max(1, args.workers), parse_times=not args.no_time,
+            progress=prog if args.progress else None)
+        if args.progress:
+            print("", file=sys.stderr)
 
     fmt = args.format
     if fmt == "summary":

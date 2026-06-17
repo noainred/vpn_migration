@@ -39,6 +39,18 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   the CLI. Direct browser CSV upload is capped (64 MB) and otherwise redirects
   the user to the CLI. The portal must never be the heavy processor.
 
+## Live capture (near-real-time)
+
+- The toolkit does **not** sniff packets itself (stdlib only). Live = pipe
+  `tshark -l` output in: CLI `--stdin --live` (refreshing dashboard) or the
+  portal's live view (`--enable-capture`, server runs tshark in a thread,
+  browser polls `/api/live/status`).
+- "End-to-end IP" depends on the capture point: VPN iface (`tun0`) shows inner
+  overlay endpoints; physical NIC shows tunnel endpoints; NAT rewrites them.
+  State this; never claim true end-to-end from a single mid-path capture.
+- Capture is **opt-in and validated**: disabled by default (403), interface
+  name whitelisted by regex, tshark spawned without a shell (argv list).
+
 ## Layout
 
 - `tinc_route_analyzer/flowcsv.py` — tshark CSV: streaming parse, conversation

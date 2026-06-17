@@ -1,7 +1,7 @@
 "use strict";
 
 // ---- state ----------------------------------------------------------------
-const state = { files: [], result: null };
+const state = { files: [], result: null, liveTimer: null };
 const $ = (sel) => document.querySelector(sel);
 const els = {
   drop: $("#dropzone"), input: $("#fileInput"), list: $("#fileList"),
@@ -74,7 +74,51 @@ function parseHostMap() {
   });
   return map;
 }
+// ---- live capture ---------------------------------------------------------
+function setLiveStatus(t, kind) {
+  const el = $("#liveStatus"); el.textContent = t || ""; el.className = "msg" + (kind ? " " + kind : "");
+}
+function stopLivePolling() {
+  if (state.liveTimer) { clearInterval(state.liveTimer); state.liveTimer = null; }
+}
+async function startLive() {
+  const iface = ($("#liveIface").value || "").trim();
+  if (!iface) { setLiveStatus("인터페이스 이름을 입력하세요 (예: tun0).", "err"); return; }
+  setLiveStatus("캡처 시작 중…");
+  try {
+    const res = await fetch("/api/live/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ iface }),
+    });
+    const json = await res.json();
+    if (!json.ok) { setLiveStatus(json.error || "시작 실패", "err"); return; }
+    setLiveStatus(`'${iface}' 캡처 중…`, "ok");
+    els.results.classList.remove("hidden");
+    stopLivePolling();
+    await pollLive();
+    state.liveTimer = setInterval(pollLive, 2000);
+  } catch (e) { setLiveStatus("요청 실패: " + e, "err"); }
+}
+async function pollLive() {
+  try {
+    const json = await (await fetch("/api/live/status")).json();
+    if (!json.ok) { setLiveStatus(json.error || "상태 조회 실패", "err"); stopLivePolling(); return; }
+    state.result = json;
+    renderFlow(json);
+    setupExports("live", json);
+    setLiveStatus(`'${json.iface || "?"}' 캡처 중 — ${json.elapsed}s · ${Math.round(json.pps).toLocaleString()} pkt/s · 패킷 ${num(json.data.meta.packets)}`,
+      json.running ? "ok" : "");
+    if (!json.running && json.error) { setLiveStatus("캡처 종료: " + json.error, "err"); stopLivePolling(); }
+  } catch (e) { setLiveStatus("폴링 실패: " + e, "err"); stopLivePolling(); }
+}
+async function stopLive() {
+  stopLivePolling();
+  try { await fetch("/api/live/stop", { method: "POST" }); } catch (e) { /* ignore */ }
+  setLiveStatus("캡처를 중지했습니다.");
+}
+
 async function analyze() {
+  stopLivePolling();
   if (!state.files.length) { setMsg("파일을 먼저 추가하세요.", "err"); return; }
   setMsg("분석 중…");
   const payload = {
@@ -111,6 +155,7 @@ async function loadSample() {
   } catch (e) { setMsg("예제 로드 실패: " + e, "err"); }
 }
 function clearAll() {
+  stopLivePolling();
   state.files = []; state.result = null;
   els.subnetDump.value = ""; els.hostMap.value = "";
   renderFileList(); els.results.classList.add("hidden"); setMsg("");
@@ -328,6 +373,15 @@ function renderTinc(json) {
 // ---- exports --------------------------------------------------------------
 function setupExports(mode, json) {
   const data = json.data, ex = json.exports || {};
+  if (mode === "live") {
+    const go = (fmt) => () => { window.location.href = "/api/live/export?fmt=" + fmt; };
+    [["btnJson", "JSON", go("json")], ["btnFlowsCsv", "통신쌍 CSV", go("conversations")],
+     ["btnPoliciesCsv", "정책 CSV", go("policies")], ["btnSummary", "호스트 CSV", go("hosts")],
+     ["btnDot", "DOT", go("dot")]].forEach(([id, label, fn]) => {
+      const b = $("#" + id); if (b) { b.textContent = label; b.onclick = fn; }
+    });
+    return;
+  }
   const conf = mode === "flow" ? [
     ["btnJson", "JSON", () => download("flow_report.json", JSON.stringify(data, null, 2), "application/json")],
     ["btnFlowsCsv", "통신쌍 CSV", () => download("conversations.csv", ex.conversations_csv, "text/csv")],
@@ -364,6 +418,8 @@ function init() {
   $("#btnAnalyze").addEventListener("click", analyze);
   $("#btnSample").addEventListener("click", loadSample);
   $("#btnClear").addEventListener("click", clearAll);
+  $("#btnLiveStart").addEventListener("click", startLive);
+  $("#btnLiveStop").addEventListener("click", stopLive);
   bindTabs();
 }
 document.addEventListener("DOMContentLoaded", init);

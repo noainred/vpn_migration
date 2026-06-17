@@ -95,6 +95,41 @@ python3 -m tinc_route_analyzer.web --port 8080
 
 ---
 
+## 📡 실시간 분석 (Live)
+
+도구가 패킷을 직접 잡지는 않습니다(폐쇄망용 표준 라이브러리). `tshark` 라이브
+출력을 흘려보내면 **준실시간**으로 집계합니다.
+
+> **"end-to-end IP"는 캡처 위치가 결정합니다.** 진짜 종단 간(오버레이 내부)
+> IP는 VPN 인터페이스 `tun0`에서, 노드(터널 엔드포인트) IP는 물리 NIC `ens192`
+> 에서 보입니다. NAT 뒤에서는 변환된 IP가 보입니다.
+
+**① CLI 실시간 대시보드** — `tshark | ... --stdin --live` (N초마다 화면 갱신)
+
+```bash
+tshark -i tun0 -l -T fields -E header=y -E separator=, \
+  -e frame.time -e ip.src -e ip.dst -e tcp.srcport -e tcp.dstport \
+  -e udp.srcport -e udp.dstport -e ip.proto -e frame.len \
+  | python3 -m tinc_route_analyzer.flowcsv --stdin --live --interval 2
+```
+
+**② 포탈 라이브 뷰** — 서버가 `tshark`를 실행해 실시간 시각화
+
+```bash
+# 보안상 기본 비활성. 명시적으로 켜야 하며 캡처 권한 필요.
+python3 -m tinc_route_analyzer.web --port 8080 --enable-capture
+```
+포탈의 **📡 실시간 캡처** 패널에서 인터페이스(`tun0` 등)를 입력하고 **[실시간 시작]**
+→ 통신쌍/서비스/토폴로지가 2초마다 갱신됩니다.
+
+- 보안: `--enable-capture` 없이는 캡처 API가 **403**으로 거부됩니다. 인터페이스
+  이름은 화이트리스트 정규식으로 검증하고, `tshark`는 **셸 없이**(argv 리스트)
+  실행해 명령 주입을 차단합니다. 기본 바인딩은 `127.0.0.1`.
+- TCP/UDP 포트를 모두 캡처하며(파서가 자동 인식), 서비스 판정은 동일하게 IANA
+  포트 범위 사실 기반입니다.
+
+---
+
 ## 1. CLI 빠르게 실행해 보기 (Quick start)
 
 ```bash

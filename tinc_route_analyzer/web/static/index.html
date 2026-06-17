@@ -53,6 +53,22 @@
         <button id="btnClear" class="ghost">초기화</button>
       </div>
       <p id="msg" class="msg"></p>
+
+      <details class="advanced live">
+        <summary>📡 실시간 캡처 — 서버에서 tshark 실행</summary>
+        <p class="bignote">서버를 <code>--enable-capture</code> 로 실행해야 하며, 해당 호스트에
+          tshark와 캡처 권한이 필요합니다. 진짜 종단 간 IP는 VPN 인터페이스(<code>tun0</code>)에서,
+          노드(엔드포인트) IP는 물리 NIC(<code>ens192</code>)에서 캡처됩니다.</p>
+        <label class="field inline">
+          <span>인터페이스</span>
+          <input id="liveIface" type="text" placeholder="tun0" />
+        </label>
+        <div class="actions">
+          <button id="btnLiveStart" class="primary">실시간 시작</button>
+          <button id="btnLiveStop" class="ghost">중지</button>
+        </div>
+        <p id="liveStatus" class="msg"></p>
+      </details>
     </section>
 
     <!-- Results -->

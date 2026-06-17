@@ -140,5 +140,50 @@ class TestWebFlowMode(unittest.TestCase):
         self.assertEqual(res["mode"], "tinc")
 
 
+class TestLiveCapture(unittest.TestCase):
+    """Live capture core, exercised without tshark via fed/synthetic lines."""
+
+    def _cap(self):
+        from tinc_route_analyzer.web.server import LiveCapture
+        return LiveCapture()
+
+    def test_feed_and_snapshot(self):
+        cap = self._cap()
+        cap.feed_lines(FLOW_CSV.splitlines())
+        snap = cap.snapshot()
+        self.assertEqual(snap["data"]["meta"]["hosts"], 2)
+        self.assertEqual(snap["data"]["mode"], "flow")
+        self.assertFalse(snap["running"])
+
+    def test_start_with_fake_source_thread(self):
+        cap = self._cap()
+        lines = FLOW_CSV.splitlines()
+        ok, err = cap._start(lambda: iter(lines), "test0")
+        self.assertTrue(ok)
+        cap.thread.join(timeout=3)
+        snap = cap.snapshot()
+        self.assertEqual(snap["data"]["meta"]["hosts"], 2)
+        self.assertFalse(snap["running"])
+
+    def test_export_formats(self):
+        cap = self._cap()
+        cap.feed_lines(FLOW_CSV.splitlines())
+        text, ctype = cap.export("conversations")
+        self.assertIn("node_a,node_b", text)
+        self.assertEqual(ctype, "text/csv")
+        self.assertEqual(cap.export("bogus"), (None, None))
+
+    def test_udp_ports_via_secondary_columns(self):
+        # header with both tcp and udp port columns; a UDP row uses udp ports.
+        from tinc_route_analyzer import flowcsv
+        text = (
+            "frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,udp.srcport,udp.dstport,ip.proto,frame.len\n"
+            '"Jun 16, 2026 14:07:00.1 KST",10.0.0.9,10.0.0.1,,,40000,655,17,120\n')
+        analysis, _ = flowcsv.analyze_flow_texts([("u.csv", None, text)])
+        d = flowcsv.to_dict(analysis)
+        self.assertEqual(d["services"][0]["service"], "UDP/655")
+        self.assertEqual(d["services"][0]["server"], "10.0.0.1")
+
+
 if __name__ == "__main__":
     unittest.main()
