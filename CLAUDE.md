@@ -17,6 +17,10 @@ policy on **NSX**.
      capture), so `_service_port` returns `None` and no policy is fabricated.
    - Service detection is corroborated with evidence: the count of distinct
      client hosts seen connecting to `server:port`.
+   - Stronger still: if `tcp.flags` is captured, the TCP 3-way handshake gives
+     the server side as a fact (SYN -> dst is server; SYN-ACK -> src is server),
+     overriding the port-range inference. Each service records its `basis`
+     (`handshake` vs `port-range`).
 2. **Measure, don't estimate.** Back performance/scale claims with a real run
    (generate data, time it, read peak RSS). Do not state throughput numbers
    from memory.

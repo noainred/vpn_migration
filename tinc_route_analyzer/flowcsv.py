@@ -49,6 +49,7 @@ _FIELD_ALIASES = {
     "tcp.srcport": "sport", "udp.srcport": "sport",
     "tcp.dstport": "dport", "udp.dstport": "dport",
     "ip.proto": "proto", "frame.len": "length", "frame.cap_len": "length",
+    "tcp.flags": "flags", "tcp.flags.syn": "syn", "tcp.flags.ack": "ack",
 }
 _DEFAULT_ORDER = ["time", "src", "dst", "sport", "dport", "proto", "length"]
 
@@ -191,9 +192,11 @@ def _service_port(sport: Optional[int], dport: Optional[int], proto) -> Optional
 # --- parsing ---------------------------------------------------------------
 
 class FlowRecord:
-    __slots__ = ("time", "src", "dst", "sport", "dport", "proto", "length")
+    __slots__ = ("time", "src", "dst", "sport", "dport", "proto", "length",
+                 "syn", "ack")
 
-    def __init__(self, time, src, dst, sport, dport, proto, length):
+    def __init__(self, time, src, dst, sport, dport, proto, length,
+                 syn=None, ack=None):
         self.time = time
         self.src = src
         self.dst = dst
@@ -201,6 +204,24 @@ class FlowRecord:
         self.dport = dport
         self.proto = proto
         self.length = length
+        self.syn = syn   # TCP SYN flag (True/False), or None if not captured
+        self.ack = ack   # TCP ACK flag (True/False), or None if not captured
+
+
+def _parse_flags(flags, syn, ack):
+    """Return (syn, ack) booleans from tcp.flags hex or the boolean columns."""
+    if syn is not None or ack is not None:
+        truthy = ("1", "true", "True")
+        return ((syn or "").strip() in truthy if syn is not None else None,
+                (ack or "").strip() in truthy if ack is not None else None)
+    if flags:
+        try:
+            val = int(flags, 16) if flags.strip().lower().startswith("0x") \
+                else int(flags)
+        except ValueError:
+            return None, None
+        return bool(val & 0x02), bool(val & 0x10)  # SYN=0x02, ACK=0x10
+    return None, None
 
 
 def _column_map(first_row: list) -> Optional[dict]:
@@ -235,6 +256,10 @@ def _emit(reader, cmap: dict, parse_times: bool) -> Iterator[FlowRecord]:
     i_dport2 = cmap.get("dport2", -1)
     i_proto = cmap.get("proto", -1)
     i_len = cmap.get("length", -1)
+    i_flags = cmap.get("flags", -1)
+    i_syn = cmap.get("syn", -1)
+    i_ack = cmap.get("ack", -1)
+    have_flags = i_flags >= 0 or i_syn >= 0 or i_ack >= 0
     want_time = parse_times and i_time >= 0
     for row in reader:
         n = len(row)
@@ -251,11 +276,18 @@ def _emit(reader, cmap: dict, parse_times: bool) -> Iterator[FlowRecord]:
         dport = _to_int(row[i_dport]) if 0 <= i_dport < n else None
         if dport is None and 0 <= i_dport2 < n:
             dport = _to_int(row[i_dport2])
+        syn = ack = None
+        if have_flags:
+            syn, ack = _parse_flags(
+                row[i_flags] if 0 <= i_flags < n else None,
+                row[i_syn] if 0 <= i_syn < n else None,
+                row[i_ack] if 0 <= i_ack < n else None)
         yield FlowRecord(
             time=parse_time(row[i_time]) if want_time and i_time < n else None,
             src=src, dst=dst, sport=sport, dport=dport,
             proto=proto if proto is not None else 0,
             length=(_to_int(row[i_len]) or 0) if 0 <= i_len < n else 0,
+            syn=syn, ack=ack,
         )
 
 
@@ -419,12 +451,21 @@ class FlowAnalysis:
             if c["last"] is None or t > c["last"]:
                 c["last"] = t
 
-        sp = _service_port(rec.sport, rec.dport, rec.proto)
+        # Determine the server (listening) side. A TCP handshake packet is
+        # authoritative (fact); otherwise fall back to IANA port-range inference.
+        sp = server = client = basis = None
+        if rec.proto == 6 and rec.syn:
+            if rec.ack:                       # SYN-ACK: source is the server
+                server, client, sp = src, dst, rec.sport
+            else:                             # SYN: destination is the server
+                server, client, sp = dst, src, rec.dport
+            basis = "handshake"
+        if sp is None:
+            sp = _service_port(rec.sport, rec.dport, rec.proto)
+            if sp is not None:
+                server, client = (src, dst) if rec.sport == sp else (dst, src)
+                basis = "port-range"
         if sp is not None:
-            if rec.sport == sp:
-                server, client = src, dst
-            else:
-                server, client = dst, src
             c["services"].add((rec.proto, sp))
             if rec.dport is not None:
                 c["ports"].add(rec.dport)
@@ -434,8 +475,10 @@ class FlowAnalysis:
             sv = self.services.get(sk)
             if sv is None:
                 sv = {"server": server, "proto": rec.proto, "port": sp,
-                      "clients": set(), "packets": 0, "bytes": 0}
+                      "clients": set(), "packets": 0, "bytes": 0, "basis": basis}
                 self.services[sk] = sv
+            elif basis == "handshake":
+                sv["basis"] = "handshake"   # handshake outranks port-range
             sv["clients"].add(client)
             sv["packets"] += 1
             sv["bytes"] += length
@@ -531,6 +574,8 @@ class FlowAnalysis:
             s["clients"] |= os_["clients"]
             s["packets"] += os_["packets"]
             s["bytes"] += os_["bytes"]
+            if os_.get("basis") == "handshake":
+                s["basis"] = "handshake"   # handshake outranks port-range
         for k, om in other.subnet_matrix.items():
             m = self.subnet_matrix.get(k)
             if m is None:
@@ -733,16 +778,22 @@ def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None) -> dict:
     services = []
     for s in analysis.sorted_services():
         clients = sorted(s["clients"])
+        basis = s.get("basis", "port-range")
+        if basis == "handshake":
+            evidence = (f"TCP 3-way handshake observed (SYN); "
+                        f"{len(clients)} distinct client host(s)")
+        else:
+            evidence = (f"IANA RFC 6335 port-range inference; {len(clients)} "
+                        f"distinct client host(s) to {s['server']}:{s['port']}")
         services.append({
             "name": f"allow-{proto_name(s['proto'])}-{s['port']}-to-{s['server']}",
             "server": s["server"], "proto": proto_name(s["proto"]),
             "port": s["port"], "service": service_label(s["proto"], s["port"]),
-            "port_class": port_class(s["port"]),
+            "port_class": port_class(s["port"]), "basis": basis,
             "clients": clients, "client_count": len(clients),
             "source_subnets": sorted({subnet_of(c) for c in clients}),
             "action": "ALLOW", "packets": s["packets"], "bytes": s["bytes"],
-            "evidence": f"{len(clients)} distinct client host(s) observed "
-                        f"connecting to {s['server']}:{s['port']}",
+            "evidence": evidence,
         })
 
     subnet_matrix = []
@@ -827,12 +878,13 @@ def render_policies_csv(data) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["policy", "action", "source", "source_subnets", "destination",
-                "service", "proto", "port", "client_count", "packets", "bytes"])
+                "service", "proto", "port", "basis", "client_count", "packets",
+                "bytes"])
     for s in _as_dict(data)["services"]:
         w.writerow([s["name"], s["action"], "|".join(s["clients"]),
                     "|".join(s["source_subnets"]), s["server"], s["service"],
-                    s["proto"], s["port"], s["client_count"], s["packets"],
-                    s["bytes"]])
+                    s["proto"], s["port"], s.get("basis", "port-range"),
+                    s["client_count"], s["packets"], s["bytes"]])
     return buf.getvalue()
 
 
@@ -884,11 +936,12 @@ def render_services(data) -> str:
     rows = []
     for s in d["services"]:
         clients = ", ".join(s["clients"][:6]) + ("…" if len(s["clients"]) > 6 else "")
-        rows.append([s["service"], s["server"], str(s["client_count"]),
-                     clients or "-", _fmt_bytes(s["bytes"])])
+        rows.append([s["service"], s["server"], s.get("basis", "port-range"),
+                     str(s["client_count"]), clients or "-", _fmt_bytes(s["bytes"])])
     return ("Services / proposed NSX allow-policies "
-            "(server port determined from IANA RFC 6335 port ranges)\n"
-            + _table(["service", "server", "#clients", "clients", "bytes"], rows))
+            "(server port: TCP handshake when seen, else IANA RFC 6335 ranges)\n"
+            + _table(["service", "server", "basis", "#clients", "clients", "bytes"],
+                     rows))
 
 
 def render_subnets(data) -> str:

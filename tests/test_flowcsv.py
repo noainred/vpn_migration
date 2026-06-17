@@ -119,6 +119,55 @@ class TestSampleAnalysis(unittest.TestCase):
         self.assertTrue(flowcsv.render_dot(self.analysis).startswith("digraph"))
 
 
+class TestHandshakeDetection(unittest.TestCase):
+    """TCP handshake (SYN/SYN-ACK) gives a factual server determination."""
+
+    H = "frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,tcp.flags,ip.proto,frame.len\n"
+
+    def _one(self, row):
+        a, _ = flowcsv.analyze_flow_texts([("s.csv", None, self.H + row + "\n")])
+        return flowcsv.to_dict(a)["services"]
+
+    def test_syn_resolves_ambiguous_ports(self):
+        # both ports ephemeral -> port-range alone is undetermined (no service);
+        # the SYN makes the destination the server (fact).
+        svcs = self._one('"Jun 16, 2026 14:07:00.1 KST",10.0.0.9,10.0.0.1,50000,50001,0x0002,6,74')
+        self.assertEqual(len(svcs), 1)
+        self.assertEqual((svcs[0]["server"], svcs[0]["port"]), ("10.0.0.1", 50001))
+        self.assertEqual(svcs[0]["basis"], "handshake")
+
+    def test_without_flags_same_ports_undetermined(self):
+        text = ("frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,ip.proto,frame.len\n"
+                '"Jun 16, 2026 14:07:00.1 KST",10.0.0.9,10.0.0.1,50000,50001,6,74\n')
+        a, _ = flowcsv.analyze_flow_texts([("s.csv", None, text)])
+        self.assertEqual(flowcsv.to_dict(a)["services"], [])  # no guess
+
+    def test_synack_source_is_server(self):
+        svcs = self._one('"Jun 16, 2026 14:07:00.1 KST",10.0.0.1,10.0.0.9,50001,50000,0x0012,6,74')
+        self.assertEqual((svcs[0]["server"], svcs[0]["port"]), ("10.0.0.1", 50001))
+        self.assertEqual(svcs[0]["basis"], "handshake")
+
+    def test_handshake_outranks_port_range(self):
+        # SYN from :665 -> :40000 means 665 is the CLIENT side here; the server
+        # is the SYN destination (10.0.0.9:40000), overriding the port heuristic.
+        svcs = self._one('"Jun 16, 2026 14:07:00.1 KST",10.0.0.1,10.0.0.9,665,40000,0x0002,6,74')
+        self.assertEqual((svcs[0]["server"], svcs[0]["port"]), ("10.0.0.9", 40000))
+        self.assertEqual(svcs[0]["basis"], "handshake")
+
+    def test_boolean_flag_columns(self):
+        text = ("frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,tcp.flags.syn,tcp.flags.ack,ip.proto,frame.len\n"
+                '"Jun 16, 2026 14:07:00.1 KST",10.0.0.9,10.0.0.1,50000,50001,1,0,6,74\n')
+        a, _ = flowcsv.analyze_flow_texts([("s.csv", None, text)])
+        s = flowcsv.to_dict(a)["services"][0]
+        self.assertEqual((s["server"], s["port"], s["basis"]), ("10.0.0.1", 50001, "handshake"))
+
+    def test_parse_flags_helper(self):
+        self.assertEqual(flowcsv._parse_flags("0x0002", None, None), (True, False))
+        self.assertEqual(flowcsv._parse_flags("0x0012", None, None), (True, True))
+        self.assertEqual(flowcsv._parse_flags("0x0010", None, None), (False, True))
+        self.assertEqual(flowcsv._parse_flags(None, "1", "0"), (True, False))
+
+
 class TestStreamingFromDisk(unittest.TestCase):
     def test_file_matches_text(self):
         a1, _ = flowcsv.analyze_flow_texts([("network.csv", None, _sample_text())])

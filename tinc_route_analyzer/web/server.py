@@ -188,7 +188,7 @@ def _tshark_argv(iface: str) -> list:
             "-e", "frame.time", "-e", "ip.src", "-e", "ip.dst",
             "-e", "tcp.srcport", "-e", "tcp.dstport",
             "-e", "udp.srcport", "-e", "udp.dstport",
-            "-e", "ip.proto", "-e", "frame.len"]
+            "-e", "tcp.flags", "-e", "ip.proto", "-e", "frame.len"]
 
 
 def _list_interfaces() -> list:

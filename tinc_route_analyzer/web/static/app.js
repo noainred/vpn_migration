@@ -253,17 +253,22 @@ function renderFlow(json) {
     `<div class="notice">한 패킷의 양방향(A→B, B→A)을 같은 통신쌍으로 합산합니다. NSX에서는 보통 한 쌍이 하나의 양방향 허용 정책이 됩니다.</div>`;
 
   // 수집된 정책 (서비스 기반)
+  const basisBadge = (b) => b === "handshake"
+    ? `<span class="badge direct">handshake</span>`
+    : `<span class="badge indirect">port-range</span>`;
   $("#tab-policies").innerHTML = `<div class="section-title">수집된 정책 — 관측 서비스를 NSX 허용 규칙으로 변환</div>` +
-    table(["정책명", "서비스", "서버(목적지)", "출발 서브넷", "#클라이언트", "패킷", "바이트", "근거"],
+    table(["정책명", "서비스", "판정", "서버(목적지)", "출발 서브넷", "#클라이언트", "패킷", "바이트", "근거"],
       d.services.map((s) => [
         td(`<code>${esc(s.name)}</code>`),
-        td(`<span class="badge direct">${esc(s.service)}</span> <span class="muted">${esc(s.port_class)}</span>`),
+        td(`<span class="badge direct">${esc(s.service)}</span>`),
+        td(basisBadge(s.basis)),
         td(`<strong>${esc(s.server)}</strong>`),
         td(`<span class="mono">${esc(s.source_subnets.join(", "))}</span>`),
         tdn(s.client_count), tdn(num(s.packets)), tdn(fmtBytes(s.bytes)),
         td(`<span class="muted" title="${esc(s.clients.join(', '))}">${esc(s.evidence)}</span>`),
       ])) +
-    `<div class="notice">서버(리스닝) 포트는 IANA RFC 6335 포트 범위 사실에 근거해 판정하며, 판정 불가 시 정책으로 만들지 않습니다(추측 배제). 근거 열은 실제 관측된 서로 다른 클라이언트 수입니다.</div>`;
+    `<div class="notice">판정: <b>handshake</b> = TCP 3-way 핸드셰이크(SYN) 관측으로 서버 방향을 사실 확정.
+      <b>port-range</b> = IANA RFC 6335 포트 범위 기반 추정(플래그 미관측). 판정 불가 시 정책으로 만들지 않습니다(추측 배제).</div>`;
 
   // 라우팅 (서브넷 매트릭스)
   $("#tab-routing").innerHTML = `<div class="section-title">서브넷 간 매트릭스 (그룹 단위 NSX 정책)</div>` +

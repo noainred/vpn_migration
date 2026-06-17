@@ -58,12 +58,24 @@ python3 -m tinc_route_analyzer.flowcsv -f policies-csv network.csv > policies.cs
   `--no-time` 시), 30 GB 외삽 ≈ **약 14분**(코어 수에 따라 선형 단축).
 
 ### 근거 기반 서비스(리스닝 포트) 판정 — 추측 배제
-서버 포트는 **IANA RFC 6335 포트 범위**(시스템 ≤1023, 등록 1024–49151, 동적
-≥49152)와 OS 에페메럴 범위(Linux 32768–60999) 사실로 판정합니다. 두 포트가 같은
-범주라 발신자를 주소만으로 알 수 없으면(캡처에 TCP 플래그 없음) **판정하지 않고**
-정책을 만들지 않습니다. 각 서비스에는 **실제 관측된 서로 다른 클라이언트 수**를
-근거로 함께 표기합니다. (예: `network.csv`에서 `10.94.40.36:TCP/665`는 4개
-클라이언트, `10.95.113.39:TCP/665`는 1개 클라이언트가 관측됨.)
+판정 근거(basis)를 2단계로 둡니다:
+- **handshake (가장 확실)** — 캡처에 `tcp.flags`가 있으면 **TCP 3-way 핸드셰이크**로
+  서버를 사실 확정합니다. SYN(=클라이언트→서버)이면 목적지가 서버, SYN-ACK이면
+  출발지가 서버. 포트 범위가 같아도 핸드셰이크가 관측되면 확정됩니다.
+- **port-range (추정)** — 플래그가 없을 때만 **IANA RFC 6335 포트 범위**(시스템
+  ≤1023, 등록 1024–49151, 동적 ≥49152) + OS 에페메럴 범위(Linux 32768–60999)로
+  추정합니다. 두 포트가 같은 범주면 **판정하지 않고**(추측 배제) 정책을 만들지
+  않습니다.
+
+각 서비스에는 basis와 **실제 관측된 서로 다른 클라이언트 수**를 함께 표기합니다.
+(예: 플래그 없는 `network.csv`에서 `10.94.40.36:TCP/665`는 port-range·클라이언트
+4개로 판정.) 핸드셰이크 판정을 원하면 캡처 시 `-e tcp.flags` 를 추가하세요:
+
+```bash
+tshark -i tun0 -T fields -E header=y -E separator=, \
+  -e frame.time -e ip.src -e ip.dst -e tcp.srcport -e tcp.dstport \
+  -e tcp.flags -e udp.srcport -e udp.dstport -e ip.proto -e frame.len > network.csv
+```
 
 ---
 
@@ -109,9 +121,10 @@ python3 -m tinc_route_analyzer.web --port 8080
 ```bash
 tshark -i tun0 -l -T fields -E header=y -E separator=, \
   -e frame.time -e ip.src -e ip.dst -e tcp.srcport -e tcp.dstport \
-  -e udp.srcport -e udp.dstport -e ip.proto -e frame.len \
+  -e tcp.flags -e udp.srcport -e udp.dstport -e ip.proto -e frame.len \
   | python3 -m tinc_route_analyzer.flowcsv --stdin --live --interval 2
 ```
+(`tcp.flags` 를 포함하면 서버/클라이언트 방향을 핸드셰이크로 확정합니다.)
 
 **② 포탈 라이브 뷰** — 서버가 `tshark`를 실행해 실시간 시각화
 
