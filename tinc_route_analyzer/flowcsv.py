@@ -59,11 +59,24 @@ _TIME_RE = re.compile(
 _IPV4_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
 
+_PROTO_NUMS = {v: k for k, v in PROTO_NAMES.items()}
+
+
 def proto_name(proto) -> str:
     try:
         return PROTO_NAMES.get(int(proto), str(proto))
     except (TypeError, ValueError):
         return str(proto)
+
+
+def proto_num(name):
+    """Inverse of proto_name: 'TCP' -> 6, '47' -> 47 (for report reconstruction)."""
+    if isinstance(name, int):
+        return name
+    try:
+        return int(name)
+    except (TypeError, ValueError):
+        return _PROTO_NUMS.get(name, 0)
 
 
 def service_label(proto, port) -> str:
@@ -369,6 +382,10 @@ class FlowAnalysis:
         self.services: dict = {}
         self.subnet_matrix: dict = {}
         self.proto_stats: dict = {}
+        # peer activity by hour-of-week: ip -> {bucket(0..167): [packets, bytes]}
+        # (weekday*24 + hour). Memory is bounded to 168 slots/host regardless of
+        # capture duration, so idle-window analysis never leaks.
+        self.host_activity: dict = {}
         self.packets = 0
         self.bytes = 0
         self.first: Optional[datetime] = None
@@ -394,6 +411,18 @@ class FlowAnalysis:
                  "first": None, "last": None}
             self.convs[key] = c
         return c
+
+    def _bump_activity(self, ip, bucket, length):
+        a = self.host_activity.get(ip)
+        if a is None:
+            a = {}
+            self.host_activity[ip] = a
+        slot = a.get(bucket)
+        if slot is None:
+            a[bucket] = [1, length]
+        else:
+            slot[0] += 1
+            slot[1] += length
 
     def add_record(self, rec: FlowRecord) -> None:
         length = rec.length
@@ -448,6 +477,10 @@ class FlowAnalysis:
                 c["first"] = t
             if c["last"] is None or t > c["last"]:
                 c["last"] = t
+            # Activity histogram by hour-of-week for both endpoints.
+            bucket = t.weekday() * 24 + t.hour
+            self._bump_activity(src, bucket, length)
+            self._bump_activity(dst, bucket, length)
 
         # Determine the server (listening) side. A TCP handshake packet is
         # authoritative (fact); otherwise fall back to IANA port-range inference.
@@ -583,6 +616,18 @@ class FlowAnalysis:
             m["bytes"] += om["bytes"]
             m["services"] |= om["services"]
             m["host_pairs"] |= om["host_pairs"]
+        for ip, oa in other.host_activity.items():
+            a = self.host_activity.get(ip)
+            if a is None:
+                self.host_activity[ip] = oa
+                continue
+            for b, v in oa.items():
+                slot = a.get(b)
+                if slot is None:
+                    a[b] = [v[0], v[1]]
+                else:
+                    slot[0] += v[0]
+                    slot[1] += v[1]
         return self
 
 
@@ -806,6 +851,28 @@ def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None) -> dict:
                  for p, v in sorted(analysis.proto_stats.items(),
                                     key=lambda kv: -kv[1][1])]
 
+    # Activity by hour-of-week + idle windows (times this peer had no traffic
+    # while the network was otherwise active) — the migration cut-over windows.
+    global_active = set()
+    for a in analysis.host_activity.values():
+        global_active.update(a.keys())
+    activity_hosts = []
+    for ip in sorted(analysis.host_activity,
+                     key=lambda x: -sum(v[0] for v in analysis.host_activity[x].values())):
+        a = analysis.host_activity[ip]
+        week = [0] * 168
+        for b, v in a.items():
+            if 0 <= b < 168:
+                week[b] = v[0]
+        active = set(a.keys())
+        idle = global_active - active
+        activity_hosts.append({
+            "ip": ip, "subnet": subnet_of(ip),
+            "total_packets": sum(v[0] for v in a.values()),
+            "active_hours": len(active), "week": week,
+            "idle_windows": _idle_windows(idle),
+        })
+
     return {
         "mode": "flow",
         "meta": {
@@ -821,7 +888,137 @@ def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None) -> dict:
         "services": services,
         "subnet_matrix": subnet_matrix,
         "protocols": protocols,
+        "activity": {
+            "granularity": "hour-of-week",
+            "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            "observed_hours": len(global_active),
+            "hosts": activity_hosts,
+        },
     }
+
+
+def _idle_windows(buckets):
+    """Group hour-of-week bucket indices into contiguous (weekday, hour) ranges."""
+    out = []
+    buckets = sorted(buckets)
+    i = 0
+    n = len(buckets)
+    while i < n:
+        b = buckets[i]
+        wd = b // 24
+        start = b % 24
+        end = start
+        j = i + 1
+        while j < n and buckets[j] == buckets[j - 1] + 1 and buckets[j] // 24 == wd:
+            end = buckets[j] % 24
+            j += 1
+        out.append({"weekday": wd, "start_hour": start, "end_hour": end})
+        i = j
+    return out
+
+
+_DT_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?")
+
+
+def _parse_dt(s):
+    if not s or s == "-":
+        return None
+    m = _DT_RE.match(s)
+    if not m:
+        return None
+    frac = (m.group(7) or "0")[:6].ljust(6, "0")
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)), int(m.group(6)), int(frac))
+    except ValueError:
+        return None
+
+
+def analysis_from_report(d):
+    """Reconstruct a FlowAnalysis from a report dict produced by :func:`to_dict`.
+
+    Lets reports collected on several servers be loaded and merged on one box;
+    merging is keyed by conversation pair / (server,proto,port) service, so
+    duplicate communication pairs across servers are combined, not double-listed.
+    """
+    an = FlowAnalysis()
+    meta = d.get("meta", {})
+    an.packets = int(meta.get("packets", 0) or 0)
+    an.bytes = int(meta.get("bytes", 0) or 0)
+    an.first = _parse_dt(meta.get("first_seen"))
+    an.last = _parse_dt(meta.get("last_seen"))
+    for p in d.get("protocols", []):
+        an.proto_stats[proto_num(p.get("proto"))] = [
+            int(p.get("packets", 0)), int(p.get("bytes", 0))]
+    for h in d.get("hosts", []):
+        ip = h["ip"]
+        an.hosts[ip] = {
+            "ip": ip, "subnet": h.get("subnet") or subnet_of(ip),
+            "sent_bytes": int(h.get("sent_bytes", 0)),
+            "sent_packets": int(h.get("sent_packets", 0)),
+            "recv_bytes": int(h.get("recv_bytes", 0)),
+            "recv_packets": int(h.get("recv_packets", 0)),
+            "peers": set(h.get("peers", [])),
+            "offered": set((proto_num(s["proto"]), s["port"])
+                           for s in h.get("services_offered", [])),
+            "is_client": h.get("role") in ("client", "both"),
+            "first": _parse_dt(h.get("first_seen")),
+            "last": _parse_dt(h.get("last_seen")),
+        }
+    for c in d.get("conversations", []):
+        key = tuple(sorted((c["a"], c["b"])))
+        an.convs[key] = {
+            "a": key[0], "b": key[1],
+            "packets": int(c.get("packets", 0)), "bytes": int(c.get("bytes", 0)),
+            "ab_packets": int(c.get("a_to_b_packets", 0)),
+            "ab_bytes": int(c.get("a_to_b_bytes", 0)),
+            "ba_packets": int(c.get("b_to_a_packets", 0)),
+            "ba_bytes": int(c.get("b_to_a_bytes", 0)),
+            "services": set((proto_num(s["proto"]), s["port"])
+                            for s in c.get("services", [])),
+            "protocols": set(proto_num(p) for p in c.get("protocols", [])),
+            "ports": set(),
+            "first": _parse_dt(c.get("first_seen")),
+            "last": _parse_dt(c.get("last_seen")),
+        }
+    for s in d.get("services", []):
+        an.services[(s["server"], proto_num(s["proto"]), s["port"])] = {
+            "server": s["server"], "proto": proto_num(s["proto"]), "port": s["port"],
+            "clients": set(s.get("clients", [])),
+            "packets": int(s.get("packets", 0)), "bytes": int(s.get("bytes", 0)),
+            "basis": s.get("basis", "port-range"),
+        }
+    # Rebuild the subnet matrix exactly from conversations (host_pairs as a set).
+    for (a, b), c in an.convs.items():
+        sa = an.hosts.get(a, {}).get("subnet", subnet_of(a))
+        sb = an.hosts.get(b, {}).get("subnet", subnet_of(b))
+        smk = tuple(sorted((sa, sb)))
+        sm = an.subnet_matrix.get(smk)
+        if sm is None:
+            sm = {"a": smk[0], "b": smk[1], "packets": 0, "bytes": 0,
+                  "services": set(), "host_pairs": set()}
+            an.subnet_matrix[smk] = sm
+        sm["packets"] += c["packets"]
+        sm["bytes"] += c["bytes"]
+        sm["host_pairs"].add((a, b))
+        sm["services"] |= c["services"]
+    for hh in d.get("activity", {}).get("hosts", []):
+        buckets = {}
+        for b, pk in enumerate(hh.get("week", [])):
+            if pk:
+                buckets[b] = [int(pk), 0]
+        if buckets:
+            an.host_activity[hh["ip"]] = buckets
+    return an
+
+
+def merge_reports(reports):
+    """Merge report dicts from multiple servers into one FlowAnalysis (deduped)."""
+    base = FlowAnalysis()
+    for d in reports:
+        base.merge(analysis_from_report(d))
+    return base
 
 
 def _as_dict(data, stats: Optional[dict] = None) -> dict:
@@ -1044,6 +1241,9 @@ def main(argv=None) -> int:
                    help="live refresh interval in seconds (default: 2)")
     p.add_argument("--top", type=int, default=15, metavar="N",
                    help="rows shown in the live dashboard (default: 15)")
+    p.add_argument("--merge", action="store_true",
+                   help="inputs are report.json files from several servers; "
+                        "merge them (deduplicating communication pairs) and output")
     p.add_argument("--no-time", action="store_true",
                    help="skip per-packet timestamp parsing for max throughput "
                         "(drops the time-span/duration columns)")
@@ -1060,6 +1260,21 @@ def main(argv=None) -> int:
         for pat in args.inputs:
             matched = sorted(glob.glob(pat))
             paths.extend(matched or [pat])
+
+    # Merge mode: combine report.json files from multiple servers.
+    if args.merge:
+        reports = []
+        for pth in paths:
+            try:
+                with open(pth, "r", encoding="utf-8") as fh:
+                    reports.append(json.load(fh))
+            except (OSError, ValueError) as exc:
+                print("warning: skipping %s: %s" % (pth, exc), file=sys.stderr)
+        analysis = merge_reports(reports)
+        stats = {"files": len(reports), "records": analysis.packets,
+                 "sources": [{"name": os.path.basename(p), "records": 0} for p in paths]}
+        _render_and_write(analysis, stats, args)
+        return 0
 
     # Live dashboard mode (typically piped from `tshark -l`).
     if args.live:
@@ -1086,6 +1301,12 @@ def main(argv=None) -> int:
         if args.progress:
             print("", file=sys.stderr)
 
+    _render_and_write(analysis, stats, args)
+    return 0
+
+
+def _render_and_write(analysis, stats, args):
+    import sys
     fmt = args.format
     if fmt == "summary":
         text = render_summary(analysis, stats)
@@ -1106,20 +1327,19 @@ def main(argv=None) -> int:
     elif fmt == "dot":
         text = render_dot(analysis)
     else:  # pragma: no cover
-        raise SystemExit(f"unknown format {fmt}")
+        raise SystemExit("unknown format %s" % fmt)
 
     if not text.endswith("\n"):
         text += "\n"
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(text)
-        print(f"wrote {fmt} to {args.output}", file=sys.stderr)
+        print("wrote %s to %s" % (fmt, args.output), file=sys.stderr)
     else:
         sys.stdout.write(text)
 
     for pth, err in stats.get("unreadable", []):
-        print(f"warning: could not read {pth}: {err}", file=sys.stderr)
-    return 0
+        print("warning: could not read %s: %s" % (pth, err), file=sys.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover

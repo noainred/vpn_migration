@@ -193,5 +193,45 @@ class TestStreamingFromDisk(unittest.TestCase):
         self.assertIn("node_a,node_b", flowcsv.render_conversations_csv(d).splitlines()[0])
 
 
+class TestActivityTimeline(unittest.TestCase):
+    def test_hour_of_week_and_idle_windows(self):
+        # Mon 02:00 (bucket 2) only-host idle vs hub active across more hours.
+        text = (
+            "frame.time,ip.src,ip.dst,tcp.srcport,tcp.dstport,ip.proto,frame.len\n"
+            '"Jun 15, 2026 02:00:00.0 KST",10.0.0.9,10.0.0.1,40000,665,6,100\n'   # Mon 02
+            '"Jun 16, 2026 14:00:00.0 KST",10.0.0.20,10.0.0.1,41000,665,6,100\n')  # Tue 14
+        a, _ = flowcsv.analyze_flow_texts([("c.csv", None, text)])
+        d = flowcsv.to_dict(a)
+        act = {h["ip"]: h for h in d["activity"]["hosts"]}
+        # hub 10.0.0.1 active in both buckets (2 and 38) -> no idle windows
+        self.assertEqual(act["10.0.0.1"]["active_hours"], 2)
+        self.assertEqual(act["10.0.0.1"]["idle_windows"], [])
+        # 10.0.0.9 active only Mon 02 -> idle during Tue 14 (the other global bucket)
+        self.assertEqual(act["10.0.0.9"]["week"][2], 1)
+        self.assertTrue(any(w["weekday"] == 1 and w["start_hour"] == 14
+                            for w in act["10.0.0.9"]["idle_windows"]))
+
+
+class TestReportMerge(unittest.TestCase):
+    def test_round_trip_reconstruction(self):
+        a, _ = flowcsv.analyze_flow_texts([("network.csv", None, _sample_text())])
+        d1 = flowcsv.to_dict(a)
+        d2 = flowcsv.to_dict(flowcsv.analysis_from_report(d1))
+        self.assertEqual(d1["meta"]["conversations"], d2["meta"]["conversations"])
+        self.assertEqual(d1["meta"]["hosts"], d2["meta"]["hosts"])
+        self.assertEqual({s["server"] for s in d1["services"]},
+                         {s["server"] for s in d2["services"]})
+
+    def test_merge_dedups_pairs_unions_clients(self):
+        a, _ = flowcsv.analyze_flow_texts([("n.csv", None, _sample_text())])
+        d = flowcsv.to_dict(a)
+        merged = flowcsv.to_dict(flowcsv.merge_reports([d, d]))
+        self.assertEqual(merged["meta"]["conversations"], d["meta"]["conversations"])
+        self.assertEqual(merged["meta"]["hosts"], d["meta"]["hosts"])
+        self.assertEqual(merged["meta"]["packets"], 2 * d["meta"]["packets"])
+        svc = {(s["server"], s["port"]): s for s in merged["services"]}
+        self.assertEqual(svc[("10.94.40.36", 665)]["client_count"], 4)  # unioned, not 8
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
     daemon_threads = True
 
+from . import persistence
 from .. import flowcsv, reporter
 from ..analyzer import analyze_texts
 from ..flowcsv import FlowAnalysis, iter_flow_records, to_dict
@@ -99,14 +100,25 @@ def analyze_payload(payload: dict) -> dict:
         for f in files
     ]
 
-    # 1) pre-aggregated flow report.json -> visualise as-is (no re-analysis).
+    # 1) pre-aggregated flow report.json file(s). Several at once are merged
+    #    (deduplicating communication pairs) — multi-server consolidation.
+    reports = []
     for _name, _node, content in items:
         report = _try_flow_report(content)
         if report is not None:
-            return {"ok": True, "mode": "flow", "fromReport": True,
-                    "data": report,
-                    "summaryText": flowcsv.render_summary(report),
-                    "exports": _flow_exports(report)}
+            reports.append(report)
+    if reports:
+        if len(reports) == 1:
+            data = reports[0]
+            merged_note = False
+        else:
+            data = flowcsv.to_dict(flowcsv.merge_reports(reports))
+            merged_note = True
+        return {"ok": True, "mode": "flow", "fromReport": True,
+                "merged": merged_note, "mergedCount": len(reports),
+                "data": data,
+                "summaryText": flowcsv.render_summary(data),
+                "exports": _flow_exports(data)}
 
     # 2) tshark/Wireshark packet CSV -> flow analysis (guarded for size).
     if any(flowcsv.looks_like_flow_csv(c) for _n, _no, c in items):
@@ -322,6 +334,26 @@ class LiveCapture:
         return {"running": running, "error": err, "iface": iface,
                 "elapsed": round(elapsed, 1), "pps": round(pps, 1), "data": data}
 
+    def data_only(self):
+        """to_dict of the current aggregate (no pps side effects) for snapshots."""
+        with self._lock:
+            return to_dict(self.analysis)
+
+    def brief(self):
+        with self._lock:
+            return {"running": self.running, "packets": self.analysis.packets,
+                    "iface": self.iface, "error": self.error,
+                    "elapsed": round((time.time() - self.start_time), 1)
+                    if self.start_time else 0.0}
+
+    def reset_data(self):
+        """Drop the accumulated aggregate while keeping capture running (frees
+        memory held by host/conversation cardinality)."""
+        with self._lock:
+            self.analysis = FlowAnalysis()
+            self._last_p = 0
+        return True
+
     def export(self, fmt: str):
         with self._lock:
             d = to_dict(self.analysis)
@@ -340,6 +372,9 @@ class LiveCapture:
 
 _CAPTURE = LiveCapture()
 _CAPTURE_ENABLED = False
+_PERSIST = persistence.Persistence(lambda: _CAPTURE.data_only())
+# Last flow result the user viewed, stashed so the full-page topology can load it.
+_LAST_FLOW = {"data": None}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -405,6 +440,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif path == "/api/sysstatus":
+            cfg = _PERSIST.get_config()
+            self._send_json({
+                "ok": True,
+                "system": persistence.system_stats(cfg["save_dir"]),
+                "capture": _CAPTURE.brief(),
+                "persist": _PERSIST.status(),
+                "captureEnabled": _CAPTURE_ENABLED,
+            })
+        elif path == "/api/persist/config":
+            self._send_json({"ok": True, "config": _PERSIST.get_config()})
+        elif path == "/api/last":
+            self._send_json({"ok": True, "data": _LAST_FLOW["data"]})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -441,6 +489,25 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/live/stop":
             _CAPTURE.stop()
             self._send_json({"ok": True, "running": False})
+        elif path == "/api/live/reset":
+            _CAPTURE.reset_data()
+            self._send_json({"ok": True})
+        elif path == "/api/last":
+            payload = self._read_json_body() or {}
+            _LAST_FLOW["data"] = payload.get("data")
+            self._send_json({"ok": True})
+        elif path == "/api/persist/config":
+            payload = self._read_json_body()
+            if payload is None:
+                self._send_json({"ok": False, "error": "invalid request body"}, 400)
+                return
+            try:
+                cfg = _PERSIST.set_config(payload)
+            except OSError as exc:
+                self._send_json({"ok": False,
+                                 "error": "저장 위치를 쓸 수 없습니다: %s" % exc}, 400)
+                return
+            self._send_json({"ok": True, "config": cfg})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -472,6 +539,9 @@ def run(host: str = "127.0.0.1", port: int = 8080) -> None:
     print(f"tinc route analyzer portal running at {url}")
     print(f"live packet capture: {'ENABLED' if _CAPTURE_ENABLED else 'disabled'}"
           + ("" if _CAPTURE_ENABLED else " (start with --enable-capture)"))
+    _PERSIST.start()
+    print(f"snapshot store: {_PERSIST.get_config()['save_dir']} "
+          "(configure cadence/path in the portal)")
     print("press Ctrl+C to stop")
     try:
         httpd.serve_forever()

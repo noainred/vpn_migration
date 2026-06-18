@@ -62,7 +62,16 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   reports (summary/csv/json/dot), CLI.
 - `tinc_route_analyzer/{parser,analyzer,reporter,cli}.py` — tinc log analyzer.
 - `tinc_route_analyzer/web/` — portal (stdlib http.server, no CDN). Auto-detects
-  input: aggregated flow JSON, tshark CSV, or tinc logs.
+  input: aggregated flow JSON (one or many -> merged/deduped), tshark CSV, or
+  tinc logs. `static/topology.html` = full-page force-layout topology (pan/zoom).
+- `tinc_route_analyzer/web/persistence.py` — minute/hour/day snapshot scheduler
+  + `system_stats()` (CPU via `resource`, RSS via `/proc/self/status`, disk via
+  `shutil.disk_usage`; no psutil). Endpoints: `/api/sysstatus`,
+  `/api/persist/config`, `/api/live/reset`, `/api/last`.
+- Flow analysis extras: per-host hour-of-week **activity histogram** (bounded to
+  168 slots/host -> idle-window/migration detection) and
+  `analysis_from_report`/`merge_reports` for multi-server consolidation
+  (dedupe by conversation pair / (server,proto,port) service).
 - `samples/network.csv` — real-format packet-capture sample. `tests/` — run
   with `python -m unittest discover -s tests`.
 

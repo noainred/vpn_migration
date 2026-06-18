@@ -78,9 +78,11 @@
       <nav class="tabs" id="tabs">
         <button class="tab active" data-tab="status">수집상태</button>
         <button class="tab" data-tab="graph">토폴로지</button>
+        <button class="tab" data-tab="subnet">서브넷/IP</button>
         <button class="tab" data-tab="hosts">호스트 정보</button>
         <button class="tab" data-tab="conv">통신쌍</button>
         <button class="tab" data-tab="policies">수집된 정책</button>
+        <button class="tab" data-tab="activity">활동/유휴</button>
         <button class="tab" data-tab="routing">라우팅</button>
       </nav>
 
@@ -91,6 +93,7 @@
         <button class="chip" id="btnPoliciesCsv">정책 CSV</button>
         <button class="chip" id="btnDot">Graphviz DOT</button>
         <button class="chip" id="btnSummary">요약 TXT</button>
+        <button class="chip" id="btnFullTopo">⛶ 토폴로지 전체화면</button>
       </div>
 
       <div class="tabpanel active" id="tab-status"></div>
@@ -98,10 +101,32 @@
         <div class="legend" id="graphLegend"></div>
         <div id="graph" class="graph"></div>
       </div>
+      <div class="tabpanel" id="tab-subnet"></div>
       <div class="tabpanel" id="tab-hosts"></div>
       <div class="tabpanel" id="tab-conv"></div>
       <div class="tabpanel" id="tab-policies"></div>
+      <div class="tabpanel" id="tab-activity"></div>
       <div class="tabpanel" id="tab-routing"></div>
+    </section>
+
+    <!-- System / storage dashboard (always visible) -->
+    <section class="panel sysmon" id="sysmon">
+      <h2>시스템 · 저장 대시보드</h2>
+      <details class="advanced" id="persistSettings">
+        <summary>수집 저장 설정 (분/시/일 단위 스냅샷 · 저장 위치)</summary>
+        <label class="field"><span>저장 위치(서버 경로)</span>
+          <input id="saveDir" type="text" placeholder="/var/lib/portal_data" /></label>
+        <div class="toggle-row">
+          <label><input type="checkbox" id="persMinute" /> 분</label>
+          <label><input type="checkbox" id="persHour" /> 시간</label>
+          <label><input type="checkbox" id="persDay" /> 일</label>
+          <label>보관 개수 <input id="persRetention" type="number" min="0" value="0" style="width:70px" /></label>
+          <button id="btnPersistApply" class="primary" style="flex:0 0 auto">적용</button>
+        </div>
+        <p id="persistMsg" class="msg"></p>
+      </details>
+      <div class="overview" id="sysCards"></div>
+      <div id="savedFiles"></div>
     </section>
   </main>
 

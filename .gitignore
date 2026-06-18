@@ -23,6 +23,8 @@ htmlcov/
 *.swp
 .DS_Store
 
-# Generated reports
+# Generated reports / snapshot store
 report.json
 *.png
+portal_data/
+*.tmp

@@ -1,0 +1,243 @@
+"""Periodic persistence of the live aggregate + process/disk resource stats.
+
+Standard-library only (no psutil), Python 3.6+:
+  * CPU%  -> resource.getrusage (utime+stime) sampled between polls
+  * RSS   -> /proc/self/status VmRSS (Linux) with a resource fallback
+  * disk  -> shutil.disk_usage
+  * saved -> os.listdir + os.path.getsize of the snapshot files
+
+The live capture aggregate is written to disk at minute/hour/day cadences so a
+long-running capture leaves a durable, bounded record; the dashboard exposes
+CPU/RSS/disk/file-size so memory growth or a filling disk is visible early.
+"""
+
+import json
+import os
+import shutil
+import threading
+import time
+from datetime import datetime
+
+try:
+    import resource  # Unix only; absent on Windows
+except ImportError:  # pragma: no cover
+    resource = None
+
+DEFAULT_DIR = os.path.join(os.getcwd(), "portal_data")
+_GRANS = ("minute", "hour", "day")
+_KEYFMT = {"minute": "%Y-%m-%d_%H%M", "hour": "%Y-%m-%d_%H", "day": "%Y-%m-%d"}
+_PREFIX = {"minute": "flow_min", "hour": "flow_hour", "day": "flow_day"}
+
+_cpu_sampler = {"t": None, "cpu": None}
+
+
+def _cpu_percent():
+    """Process CPU% since the previous call (0 on the first call)."""
+    if resource is None:
+        return 0.0
+    ru = resource.getrusage(resource.RUSAGE_SELF)
+    cpu = ru.ru_utime + ru.ru_stime
+    now = time.time()
+    last_t, last_c = _cpu_sampler["t"], _cpu_sampler["cpu"]
+    _cpu_sampler["t"], _cpu_sampler["cpu"] = now, cpu
+    if last_t is None or now <= last_t:
+        return 0.0
+    return round((cpu - last_c) / (now - last_t) * 100.0, 1)
+
+
+def _rss_bytes():
+    """Current resident memory of this process in bytes."""
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024  # kB -> bytes
+    except (OSError, ValueError, IndexError):
+        pass
+    if resource is not None:
+        # ru_maxrss is kB on Linux (peak); a usable fallback.
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    return 0
+
+
+def _peak_rss_bytes():
+    if resource is not None:
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    return 0
+
+
+def _saved_files(save_dir):
+    total = 0
+    files = []
+    try:
+        names = os.listdir(save_dir)
+    except OSError:
+        return 0, []
+    for name in names:
+        if not name.startswith("flow_") or not name.endswith(".json"):
+            continue
+        fp = os.path.join(save_dir, name)
+        try:
+            st = os.stat(fp)
+        except OSError:
+            continue
+        files.append({
+            "name": name, "bytes": st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+        })
+        total += st.st_size
+    files.sort(key=lambda f: f["mtime"], reverse=True)
+    return total, files
+
+
+def system_stats(save_dir):
+    """Return CPU/memory, disk free space for ``save_dir`` and saved-file size."""
+    probe = save_dir if os.path.isdir(save_dir) else (os.path.dirname(save_dir) or ".")
+    try:
+        du = shutil.disk_usage(probe)
+        disk = {"path": probe, "total": du.total, "used": du.used, "free": du.free,
+                "percent_used": round(du.used / du.total * 100, 1) if du.total else 0}
+    except OSError:
+        disk = {"path": probe, "total": 0, "used": 0, "free": 0, "percent_used": 0}
+    total, files = _saved_files(save_dir)
+    return {
+        "cpu_percent": _cpu_percent(),
+        "rss_bytes": _rss_bytes(),
+        "peak_rss_bytes": _peak_rss_bytes(),
+        "disk": disk,
+        "saved": {"dir": save_dir, "bytes": total, "count": len(files),
+                  "recent": files[:12]},
+    }
+
+
+class Persistence(object):
+    """Background scheduler that snapshots the live aggregate to disk."""
+
+    def __init__(self, snapshot_fn):
+        # snapshot_fn() -> a flow report dict (flowcsv.to_dict) or None.
+        self.snapshot_fn = snapshot_fn
+        self._lock = threading.Lock()
+        self.config = {"save_dir": DEFAULT_DIR, "minute": False, "hour": False,
+                       "day": False, "retention": 0}
+        self.last = {"minute": None, "hour": None, "day": None}
+        self.last_paths = {"minute": None, "hour": None, "day": None}
+        self._stop = False
+        self.thread = None
+        self._load_config()
+
+    # -- config -------------------------------------------------------------
+
+    def get_config(self):
+        with self._lock:
+            return dict(self.config)
+
+    def set_config(self, cfg):
+        save_dir = (cfg.get("save_dir") or "").strip() or DEFAULT_DIR
+        save_dir = os.path.abspath(os.path.expanduser(save_dir))
+        os.makedirs(save_dir, exist_ok=True)
+        # confirm it is writable (raises on failure -> surfaced to the caller)
+        probe = os.path.join(save_dir, ".portal_write_test")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+        with self._lock:
+            self.config = {
+                "save_dir": save_dir,
+                "minute": bool(cfg.get("minute")),
+                "hour": bool(cfg.get("hour")),
+                "day": bool(cfg.get("day")),
+                "retention": max(0, int(cfg.get("retention") or 0)),
+            }
+        self._save_config()
+        return self.get_config()
+
+    def status(self):
+        with self._lock:
+            return {"config": dict(self.config), "last": dict(self.last),
+                    "last_paths": dict(self.last_paths)}
+
+    # -- scheduler ----------------------------------------------------------
+
+    def start(self):
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self._stop = True
+
+    def _run(self):
+        while not self._stop:
+            try:
+                self._tick()
+            except Exception:  # pragma: no cover - never kill the thread
+                pass
+            time.sleep(5)
+
+    def _tick(self):
+        cfg = self.get_config()
+        if not (cfg["minute"] or cfg["hour"] or cfg["day"]):
+            return
+        now = datetime.now()
+        data = None
+        for gran in _GRANS:
+            if not cfg[gran]:
+                continue
+            key = now.strftime(_KEYFMT[gran])
+            if self.last[gran] == key:
+                continue
+            if data is None:
+                data = self.snapshot_fn()
+                if not data or data.get("meta", {}).get("packets", 0) <= 0:
+                    return  # nothing collected yet; try again next tick
+            path = self._write(cfg["save_dir"], gran, key, data)
+            with self._lock:
+                self.last[gran] = key
+                self.last_paths[gran] = path
+            self._retain(cfg["save_dir"], gran, cfg["retention"])
+
+    def _write(self, save_dir, gran, key, data):
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, "%s_%s.json" % (_PREFIX[gran], key))
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)   # atomic
+        return path
+
+    def _retain(self, save_dir, gran, keep):
+        if not keep or keep <= 0:
+            return
+        try:
+            names = sorted(n for n in os.listdir(save_dir)
+                           if n.startswith(_PREFIX[gran] + "_") and n.endswith(".json"))
+        except OSError:
+            return
+        for name in names[:-keep]:
+            try:
+                os.remove(os.path.join(save_dir, name))
+            except OSError:
+                pass
+
+    # -- config file --------------------------------------------------------
+
+    def _config_path(self):
+        return os.path.join(DEFAULT_DIR, "config.json")
+
+    def _save_config(self):
+        try:
+            os.makedirs(DEFAULT_DIR, exist_ok=True)
+            with open(self._config_path(), "w", encoding="utf-8") as fh:
+                json.dump(self.config, fh)
+        except OSError:  # pragma: no cover
+            pass
+
+    def _load_config(self):
+        try:
+            with open(self._config_path(), "r", encoding="utf-8") as fh:
+                saved = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if isinstance(saved, dict):
+            for k in list(self.config):
+                if k in saved:
+                    self.config[k] = saved[k]

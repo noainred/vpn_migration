@@ -185,5 +185,59 @@ class TestLiveCapture(unittest.TestCase):
         self.assertEqual(d["services"][0]["server"], "10.0.0.1")
 
 
+class TestPersistenceAndDashboard(unittest.TestCase):
+    def test_system_stats_keys(self):
+        from tinc_route_analyzer.web import persistence
+        st = persistence.system_stats(".")
+        for k in ("cpu_percent", "rss_bytes", "disk", "saved"):
+            self.assertIn(k, st)
+        self.assertIn("free", st["disk"])
+        self.assertGreater(st["rss_bytes"], 0)
+
+    def test_persistence_set_config_and_snapshot(self):
+        import tempfile
+        from tinc_route_analyzer.web import persistence
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = {"meta": {"packets": 5}, "conversations": [], "hosts": []}
+            p = persistence.Persistence(lambda: captured)
+            cfg = p.set_config({"save_dir": tmp, "minute": True, "retention": 0})
+            self.assertEqual(cfg["save_dir"], os.path.abspath(tmp))
+            p._tick()  # one cadence pass; should write a minute snapshot
+            files = [f for f in os.listdir(tmp) if f.startswith("flow_min")]
+            self.assertEqual(len(files), 1)
+            # no data -> no write
+            p2 = persistence.Persistence(lambda: {"meta": {"packets": 0}})
+            p2.set_config({"save_dir": tmp, "minute": True})
+            before = len(os.listdir(tmp))
+            p2._tick()
+            self.assertEqual(len(os.listdir(tmp)), before)
+
+    def test_retention_keeps_last_n(self):
+        import tempfile
+        from tinc_route_analyzer.web import persistence
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in range(5):
+                open(os.path.join(tmp, "flow_min_x%02d.json" % i), "w").close()
+            p = persistence.Persistence(lambda: None)
+            p._retain(tmp, "minute", 2)
+            self.assertEqual(len([f for f in os.listdir(tmp) if f.startswith("flow_min")]), 2)
+
+
+class TestMultiReportMergeAndLast(unittest.TestCase):
+    def test_analyze_payload_merges_multiple_reports(self):
+        from tinc_route_analyzer import flowcsv
+        a, _ = flowcsv.analyze_flow_texts([("network.csv", None, FLOW_CSV)])
+        rep = json.dumps(flowcsv.to_dict(a))
+        res = analyze_payload({"files": [
+            {"name": "s1.json", "content": rep},
+            {"name": "s2.json", "content": rep}]})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mode"], "flow")
+        self.assertTrue(res.get("merged"))
+        self.assertEqual(res["mergedCount"], 2)
+        # one conversation, deduped; packets doubled
+        self.assertEqual(res["data"]["meta"]["conversations"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -294,6 +294,93 @@ function renderFlow(json) {
     `<span><i class="sw solid"></i> 통신</span>
      <span><i class="sw node-log"></i> 서버(서비스 제공)</span>
      <span><i class="sw node-peer"></i> 클라이언트</span>`);
+
+  renderSubnet(d);
+  renderActivity(d);
+}
+
+// ---- 서브넷별 IP + IP 드릴다운 (어떤 서버와 통신하는지) ---------------------
+function peersOf(d, ip) {
+  // returns [{peer, packets, bytes, services:[label], role}]
+  const out = {};
+  d.conversations.forEach((c) => {
+    let peer = null;
+    if (c.a === ip) peer = c.b; else if (c.b === ip) peer = c.a; else return;
+    out[peer] = { peer, packets: c.packets, bytes: c.bytes,
+      services: c.services.map((s) => s.label) };
+  });
+  // mark which side is the server, from services
+  d.services.forEach((s) => {
+    if (s.server === ip) { (s.clients || []).forEach((cl) => { if (out[cl]) out[cl].role = "client→this(server)"; }); }
+    else if ((s.clients || []).includes(ip)) { if (out[s.server]) out[s.server].role = "this→" + s.server + "(server)"; }
+  });
+  return Object.values(out).sort((x, y) => y.bytes - x.bytes);
+}
+function renderSubnet(d) {
+  const bySubnet = {};
+  d.hosts.forEach((h) => { (bySubnet[h.subnet] = bySubnet[h.subnet] || []).push(h); });
+  const subnets = Object.keys(bySubnet).sort();
+  const left = subnets.map((sn) => {
+    const chips = bySubnet[sn].sort((a, b) => b.total_bytes - a.total_bytes).map((h) =>
+      `<span class="ip-chip ${h.role === "server" || h.role === "both" ? "server" : ""}" data-ip="${esc(h.ip)}">${esc(h.ip)}</span>`).join("");
+    return `<div class="subnet-box"><h4>${esc(sn)} <span class="muted">(${bySubnet[sn].length})</span></h4>${chips}</div>`;
+  }).join("");
+  $("#tab-subnet").innerHTML =
+    `<div class="section-title">서브넷별 통신 IP — IP를 클릭하면 통신 상대(서버)를 조회합니다</div>
+     <div class="subnet-grid"><div>${left}</div><div class="ip-detail" id="ipDetail">
+       <p class="muted">IP를 클릭하세요.</p></div></div>`;
+  $("#tab-subnet").querySelectorAll(".ip-chip").forEach((ch) => ch.addEventListener("click", () => {
+    $("#tab-subnet").querySelectorAll(".ip-chip").forEach((x) => x.classList.remove("sel"));
+    ch.classList.add("sel");
+    showIp(d, ch.dataset.ip);
+  }));
+}
+function showIp(d, ip) {
+  const host = d.hosts.find((h) => h.ip === ip) || {};
+  const peers = peersOf(d, ip);
+  const offered = (host.services_offered || []).map((s) => s.label).join(", ") || "-";
+  const rows = peers.map((p) => [
+    td(`<strong>${esc(p.peer)}</strong>`),
+    td(`<span class="mono">${esc((p.services || []).join(", ") || "-")}</span>`),
+    td(esc(p.role || "-")),
+    tdn(num(p.packets)), tdn(fmtBytes(p.bytes)),
+  ]);
+  $("#ipDetail").innerHTML =
+    `<div class="section-title">${esc(ip)} <span class="muted">(${esc(host.subnet || "")}, 역할 ${esc(host.role || "-")})</span></div>
+     <div class="notice" style="margin:0 0 10px">제공 서비스: <span class="mono">${esc(offered)}</span> · 피어 ${peers.length}개</div>
+     ${table(["통신 상대", "서비스", "방향(서버)", "패킷", "바이트"], rows)}`;
+}
+
+// ---- 활동/유휴 시간대 (마이그레이션 창) -----------------------------------
+function renderActivity(d) {
+  const act = d.activity;
+  if (!act || !act.hosts.length) { $("#tab-activity").innerHTML = `<p class="muted">타임스탬프가 없어 활동 분석을 할 수 없습니다(--no-time).</p>`; return; }
+  const wd = act.weekdays;
+  const top = act.hosts.slice(0, 12);
+  let maxv = 1; top.forEach((h) => h.week.forEach((v) => { if (v > maxv) maxv = v; }));
+  const blocks = top.map((h) => {
+    let grid = `<table class="heat"><tr><th></th>${Array.from({ length: 24 }, (_, i) => `<th>${i}</th>`).join("")}</tr>`;
+    for (let day = 0; day < 7; day++) {
+      grid += `<tr><th>${wd[day]}</th>`;
+      for (let hr = 0; hr < 24; hr++) {
+        const v = h.week[day * 24 + hr] || 0;
+        const a = v ? (0.15 + 0.85 * Math.sqrt(v / maxv)).toFixed(2) : 0;
+        const bg = v ? `background:rgba(79,70,229,${a})` : "";
+        grid += `<td class="cell" style="${bg}" title="${wd[day]} ${hr}:00 — ${num(v)}p"></td>`;
+      }
+      grid += `</tr>`;
+    }
+    grid += `</table>`;
+    const idle = (h.idle_windows || []).map((w) =>
+      `<span class="idle-tag">${wd[w.weekday]} ${String(w.start_hour).padStart(2, "0")}:00–${String(w.end_hour).padStart(2, "0")}:59</span>`).join("") || "<span class='muted'>유휴 구간 없음(항상 활성)</span>";
+    return `<div class="subnet-box" style="margin-bottom:14px">
+      <h4>${esc(h.ip)} <span class="muted">(${esc(h.subnet)}, 활성 ${h.active_hours}시간/주, ${num(h.total_packets)}p)</span></h4>
+      <div class="heatwrap">${grid}</div>
+      <div style="margin-top:8px"><b>마이그레이션 가능 유휴 창</b>(네트워크는 활성인데 이 IP는 무통신): ${idle}</div></div>`;
+  }).join("");
+  $("#tab-activity").innerHTML =
+    `<div class="section-title">피어별 활동 시간대(주중×시간) · 유휴 시간 = 안전한 마이그레이션 창</div>
+     <div class="notice" style="margin-top:0">색이 진할수록 트래픽이 많은 시간대입니다. 충분한 기간(≥1주) 캡처할수록 패턴이 정확합니다.</div>${blocks}`;
 }
 
 // ---- TINC log rendering ---------------------------------------------------
@@ -373,6 +460,91 @@ function renderTinc(json) {
   drawGraph($("#graph"), $("#graphLegend"), nodes, edges,
     `<span><i class="sw solid"></i> 직접</span><span><i class="sw dashed"></i> 중계</span>
      <span><i class="sw node-log"></i> 로그 수집</span><span><i class="sw node-peer"></i> 피어관측</span>`);
+  $("#tab-subnet").innerHTML = `<p class="muted">서브넷/IP 보기는 패킷 캡처(CSV) 분석에서 제공됩니다.</p>`;
+  $("#tab-activity").innerHTML = `<p class="muted">활동/유휴 분석은 패킷 캡처(CSV) 분석에서 제공됩니다.</p>`;
+}
+
+// ---- full-screen topology --------------------------------------------------
+function currentGraph() {
+  const json = state.result; if (!json) return null;
+  const d = json.data;
+  if (json.mode === "flow") {
+    return {
+      title: "flow topology",
+      nodes: d.hosts.map((h) => ({ id: h.ip, label: h.ip,
+        sub: h.services_offered[0] ? h.services_offered[0].label : h.subnet,
+        kind: h.role === "client" ? "secondary" : (h.role === "both" ? "relay" : "primary"),
+        weight: h.total_bytes })),
+      edges: d.conversations.map((c) => ({ a: c.a, b: c.b, weight: c.bytes,
+        label: c.services.map((s) => s.label).join(",") || "", kind: "direct" })),
+    };
+  }
+  const relaySet = new Set(Object.keys(d.relays || {}));
+  return {
+    title: "tinc topology",
+    nodes: d.nodes.map((n) => ({ id: n.name, label: n.name, sub: n.subnets[0] || "",
+      kind: !n.has_log ? "secondary" : (relaySet.has(n.name) ? "relay" : "primary"),
+      weight: n.sent_bytes + n.recv_bytes })),
+    edges: d.flows.filter((f) => f.packets || f.forwarded_packets).map((f) => ({
+      a: f.src, b: f.dst, weight: f.bytes, label: `${f.packets}p`, kind: f.via.length ? "relay" : "direct" })),
+  };
+}
+async function openFullTopo() {
+  const g = currentGraph();
+  if (!g) { setMsg("먼저 분석을 실행하세요.", "err"); return; }
+  try {
+    await fetch("/api/last", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: g }) });
+    window.open("/static/topology.html", "_blank");
+  } catch (e) { setMsg("토폴로지 열기 실패: " + e, "err"); }
+}
+
+// ---- system / storage dashboard -------------------------------------------
+async function loadPersistConfig() {
+  try {
+    const j = await (await fetch("/api/persist/config")).json();
+    const c = j.config || {};
+    $("#saveDir").value = c.save_dir || "";
+    $("#persMinute").checked = !!c.minute; $("#persHour").checked = !!c.hour;
+    $("#persDay").checked = !!c.day; $("#persRetention").value = c.retention || 0;
+  } catch (e) { /* ignore */ }
+}
+async function applyPersist() {
+  const body = { save_dir: $("#saveDir").value, minute: $("#persMinute").checked,
+    hour: $("#persHour").checked, day: $("#persDay").checked,
+    retention: Number($("#persRetention").value) || 0 };
+  const el = $("#persistMsg");
+  try {
+    const j = await (await fetch("/api/persist/config", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+    if (j.ok) { el.textContent = "저장됨: " + j.config.save_dir; el.className = "msg ok"; }
+    else { el.textContent = j.error || "실패"; el.className = "msg err"; }
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+}
+function gauge(pct, label) {
+  const cls = pct >= 90 ? "danger" : (pct >= 70 ? "warn" : "");
+  return `<div class="gauge ${cls}"><span style="width:${Math.min(100, pct)}%"></span></div><div class="muted" style="font-size:11px;margin-top:3px">${esc(label)}</div>`;
+}
+async function pollSys() {
+  let j;
+  try { j = await (await fetch("/api/sysstatus")).json(); } catch (e) { return; }
+  if (!j || !j.ok) return;
+  const s = j.system, disk = s.disk, saved = s.saved, cap = j.capture || {};
+  const memMB = s.rss_bytes / 1048576, peakMB = s.peak_rss_bytes / 1048576;
+  $("#sysCards").innerHTML = [
+    card("프로세스 CPU", s.cpu_percent + "<small>%</small>") .replace("</div></div>", gauge(s.cpu_percent, "포탈 프로세스") + "</div></div>"),
+    card("메모리(RSS)", memMB.toFixed(0) + "<small>MB</small>", "peak " + peakMB.toFixed(0) + "MB"),
+    card("디스크 여유", fmtBytes(disk.free), "/ " + fmtBytes(disk.total))
+      .replace("</div></div>", gauge(disk.percent_used, esc(disk.path) + " 사용 " + disk.percent_used + "%") + "</div></div>"),
+    card("저장 파일", saved.count, fmtBytes(saved.bytes)),
+    card("라이브 캡처", cap.running ? "ON" : "off", cap.running ? num(cap.packets) + "p" : ""),
+  ].join("");
+  const rows = (saved.recent || []).map((f) => [td(`<code>${esc(f.name)}</code>`), tdn(fmtBytes(f.bytes)), td(esc(f.mtime))]);
+  const last = j.persist && j.persist.last || {};
+  $("#savedFiles").innerHTML =
+    `<div class="section-title" style="margin-top:14px">최근 저장 스냅샷 <span class="muted">(${esc(saved.dir || "")})</span></div>` +
+    `<div class="muted" style="font-size:12px;margin-bottom:6px">마지막 저장 — 분: ${esc(last.minute || "-")} · 시: ${esc(last.hour || "-")} · 일: ${esc(last.day || "-")}</div>` +
+    table(["파일", "용량", "시각"], rows);
 }
 
 // ---- exports --------------------------------------------------------------
@@ -425,6 +597,11 @@ function init() {
   $("#btnClear").addEventListener("click", clearAll);
   $("#btnLiveStart").addEventListener("click", startLive);
   $("#btnLiveStop").addEventListener("click", stopLive);
+  $("#btnFullTopo").addEventListener("click", openFullTopo);
+  $("#btnPersistApply").addEventListener("click", applyPersist);
   bindTabs();
+  loadPersistConfig();
+  pollSys();
+  setInterval(pollSys, 3000);
 }
 document.addEventListener("DOMContentLoaded", init);
