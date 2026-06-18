@@ -125,6 +125,16 @@ async function stopLive() {
   try { await fetch("/api/live/stop", { method: "POST" }); } catch (e) { /* ignore */ }
   setLiveStatus("캡처를 중지했습니다.");
 }
+async function loadVersion() {
+  try {
+    const v = await (await fetch("/api/version")).json();
+    const build = v.build ? " · " + v.build : "";
+    $("#appVer").textContent = "v" + (v.version || "?") + build;
+    if (v.date) $("#appVer").title = "배포 빌드: " + (v.build || "") + " (" + v.date + ")";
+    const foot = $("#appVerFoot");
+    if (foot) foot.textContent = " · v" + (v.version || "?") + build + (v.date ? " (" + v.date.slice(0, 10) + ")" : "");
+  } catch (e) { $("#appVer").textContent = ""; }
+}
 async function resumeLiveIfRunning() {
   // After a page refresh, reconnect to a capture that is still running on the server.
   try {
@@ -286,10 +296,11 @@ function renderFlow(json) {
       ]));
 
   // 통신쌍 (A<->B 중복 제거)
-  $("#tab-conv").innerHTML = `<div class="section-title">통신쌍 — A→B와 B→A를 하나로 합산 (중복 제거)</div>` +
-    table(["통신쌍", "패킷", "바이트", "A→B", "B→A", "서비스", "기간(s)"],
+  $("#tab-conv").innerHTML = `<div class="section-title">통신쌍 — A→B와 B→A를 하나로 합산 (중복 제거) · A/B 헤더 클릭으로 정렬</div>` +
+    table(["A", "B", "패킷", "바이트", "A→B", "B→A", "서비스", "기간(s)"],
       d.conversations.map((c) => [
-        td(`<strong>${esc(c.a)}</strong> ⟷ <strong>${esc(c.b)}</strong>`),
+        td(`<strong>${esc(c.a)}</strong>`),
+        td(`<strong>${esc(c.b)}</strong>`),
         tdn(num(c.packets)), tdn(fmtBytes(c.bytes)),
         tdn(`${num(c.a_to_b_packets)} / ${fmtBytes(c.a_to_b_bytes)}`),
         tdn(`${num(c.b_to_a_packets)} / ${fmtBytes(c.b_to_a_bytes)}`),
@@ -465,10 +476,11 @@ function renderTinc(json) {
 
   const pairBadge = (p) => p.direct_link && !p.via.length ? `<span class="badge direct">직접</span>`
     : p.via.length ? `<span class="badge relay">중계 via ${esc(p.via.join(", "))}</span>` : `<span class="badge indirect">간접</span>`;
-  $("#tab-conv").innerHTML = `<div class="section-title">통신쌍 (A↔B 중복 제거)</div>` +
-    table(["노드 쌍", "패킷", "바이트", "경로", "방향수"],
+  $("#tab-conv").innerHTML = `<div class="section-title">통신쌍 (A↔B 중복 제거) · A/B 헤더 클릭으로 정렬</div>` +
+    table(["A", "B", "패킷", "바이트", "경로", "방향수"],
       d.communication_pairs.map((p) => [
-        td(`<strong>${esc(p.a)}</strong> ⟷ <strong>${esc(p.b)}</strong>`),
+        td(`<strong>${esc(p.a)}</strong>`),
+        td(`<strong>${esc(p.b)}</strong>`),
         tdn(num(p.packets)), tdn(fmtBytes(p.bytes)), td(pairBadge(p)), tdn(p.directions.length),
       ]));
 
@@ -677,6 +689,7 @@ function init() {
     const th = e.target.closest && e.target.closest("th.sortable");
     if (th) sortByColumn(th);
   });
+  loadVersion();
   loadPersistConfig();
   pollSys();
   setInterval(pollSys, 3000);

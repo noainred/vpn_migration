@@ -30,7 +30,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 from . import persistence
-from .. import flowcsv, reporter
+from .. import flowcsv, reporter, version_info
 from ..analyzer import analyze_texts
 from ..flowcsv import FlowAnalysis, iter_flow_records, to_dict
 from ..parser import DEFAULT_YEAR
@@ -420,6 +420,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "samples": _read_samples()})
         elif path == "/api/health":
             self._send_json({"ok": True})
+        elif path == "/api/version":
+            v = version_info()
+            v["ok"] = True
+            self._send_json(v)
         elif path == "/api/live/status":
             self._send_json({"ok": True, "mode": "flow", "live": True,
                              "captureEnabled": _CAPTURE_ENABLED, **_CAPTURE.snapshot()})
