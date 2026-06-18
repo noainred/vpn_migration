@@ -501,6 +501,17 @@ _LAST_FLOW = {"data": None}
 _CODE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _UPDATER = updater.UpdateManager(lambda: version_info()["version"], _CODE_DIR)
 
+
+def _schedule_restart(delay=0.8):
+    """Re-exec the portal shortly (after the HTTP response is flushed)."""
+    def _do():
+        time.sleep(delay)
+        try:
+            updater.restart_process()      # replaces this process (does not return)
+        except Exception as exc:           # pragma: no cover
+            print("[update] restart thread error: %s" % exc, file=sys.stderr, flush=True)
+    threading.Thread(target=_do, daemon=True).start()
+
 # --- capture exclude (IP / subnet) -----------------------------------------
 
 _CAPTURE_CFG_PATH = os.path.join(persistence.DEFAULT_DIR, "capture.json")
@@ -723,12 +734,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/update/check":
             self._send_json(_UPDATER.check())
         elif path == "/api/update/apply":
-            self._send_json(_UPDATER.apply())
+            res = _UPDATER.apply()
+            # If the user enabled auto-restart, applying also restarts (one click).
+            if res.get("ok") and _UPDATER.get_config().get("auto_restart"):
+                res["restarting"] = True
+                _schedule_restart()
+            self._send_json(res)
         elif path == "/api/update/restart":
             # Respond first, then re-exec the process shortly after.
             self._send_json({"ok": True, "restarting": True})
-            threading.Thread(target=lambda: (time.sleep(0.7), _UPDATER and updater.restart_process()),
-                             daemon=True).start()
+            _schedule_restart()
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 

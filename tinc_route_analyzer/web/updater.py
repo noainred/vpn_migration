@@ -171,10 +171,20 @@ def code_dir_of(package_file):
 
 
 def restart_process():
-    """Re-exec this process (``python -m tinc_route_analyzer.web <args>``)."""
+    """Re-exec this process (``python -m tinc_route_analyzer.web <args>``).
+
+    Logs what it does to stderr so a failed restart is visible (not silent).
+    """
+    argv = [sys.executable, "-m", "tinc_route_analyzer.web"] + sys.argv[1:]
+    sys.stderr.write("[update] restarting (cwd=%s): %s\n" % (os.getcwd(), " ".join(argv)))
     sys.stdout.flush()
     sys.stderr.flush()
-    os.execv(sys.executable, [sys.executable, "-m", "tinc_route_analyzer.web"] + sys.argv[1:])
+    try:
+        os.execv(sys.executable, argv)
+    except Exception as exc:  # pragma: no cover - surfaced so it isn't silent
+        sys.stderr.write("[update] restart FAILED (execv): %s\n" % exc)
+        sys.stderr.flush()
+        raise
 
 
 # --- remote version source (versions.json over HTTPS, optional token) -------

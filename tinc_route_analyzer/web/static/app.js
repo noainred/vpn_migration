@@ -699,19 +699,35 @@ async function checkUpdate() {
   } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
   renderUpdateStatus();
 }
+function waitAndReload(maxMs) {
+  const start = Date.now();
+  const tick = async () => {
+    try { if ((await fetch("/api/health", { cache: "no-store" })).ok) { location.reload(); return; } }
+    catch (e) { /* server is down mid-restart */ }
+    if (Date.now() - start < (maxMs || 40000)) setTimeout(tick, 1000); else location.reload();
+  };
+  setTimeout(tick, 2500);   // let it go down first
+}
 async function applyUpdate() {
-  if (!window.confirm("새 버전을 적용할까요? 적용 후 '재시작'으로 반영됩니다.")) return;
+  if (!window.confirm("새 버전을 적용할까요?")) return;
   const el = $("#updMsg"); el.textContent = "적용 중…"; el.className = "msg";
   try {
     const j = await (await fetch("/api/update/apply", { method: "POST" })).json();
-    if (j.ok) { el.textContent = "적용됨: " + (j.from || "") + " → " + (j.version || "") + " · '재시작'을 누르세요"; el.className = "msg ok"; }
-    else { el.textContent = j.reason || "적용 실패"; el.className = "msg err"; }
+    if (!j.ok) { el.textContent = j.reason || "적용 실패"; el.className = "msg err"; return; }
+    if (j.restarting) {
+      el.textContent = "적용됨: " + (j.from || "") + " → " + (j.version || "") + " — 재시작 중… 새 버전으로 자동 새로고침합니다.";
+      el.className = "msg ok"; waitAndReload();
+    } else {
+      el.textContent = "적용됨: " + (j.from || "") + " → " + (j.version || "") + " · '재시작'을 누르세요(또는 '적용 후 자동 재시작' 체크).";
+      el.className = "msg ok";
+    }
   } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
 }
 async function restartUpdate() {
-  if (!window.confirm("서버를 재시작할까요? 진행 중인 캡처가 중단됩니다.")) return;
-  $("#updMsg").textContent = "재시작 요청됨 — 잠시 후 페이지를 새로고침하세요."; $("#updMsg").className = "msg";
+  if (!window.confirm("서버를 재시작할까요? (재시작해도 스캔은 유지됩니다)")) return;
+  $("#updMsg").textContent = "재시작 중… 새 버전으로 자동 새로고침합니다."; $("#updMsg").className = "msg";
   try { await fetch("/api/update/restart", { method: "POST" }); } catch (e) { /* expected */ }
+  waitAndReload();
 }
 async function renderUpdateStatus() {
   try {
