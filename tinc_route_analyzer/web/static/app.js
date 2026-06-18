@@ -189,7 +189,7 @@ async function loadSample() {
 function clearAll() {
   stopLivePolling();
   setCapturing(false);
-  state.files = []; state.result = null;
+  state.files = []; state.result = null; state.selectedIp = null;
   els.subnetDump.value = ""; els.hostMap.value = "";
   renderFileList(); els.results.classList.add("hidden"); setMsg("");
 }
@@ -391,8 +391,15 @@ function renderSubnet(d) {
     ch.classList.add("sel");
     showIp(d, ch.dataset.ip);
   }));
+  // Keep the selected IP detail visible across periodic re-renders (live poll).
+  if (state.selectedIp && d.hosts.some((h) => h.ip === state.selectedIp)) {
+    const ch = $("#tab-subnet").querySelector('.ip-chip[data-ip="' + state.selectedIp + '"]');
+    if (ch) ch.classList.add("sel");
+    showIp(d, state.selectedIp);
+  }
 }
 function showIp(d, ip) {
+  state.selectedIp = ip;
   const host = d.hosts.find((h) => h.ip === ip) || {};
   const peers = peersOf(d, ip);
   const offered = (host.services_offered || []).map((s) => s.label).join(", ") || "-";
