@@ -192,5 +192,49 @@ class TestDirectoryHandling(unittest.TestCase):
             self.assertTrue(any("director" in msg for _p, msg in stats["unreadable"]))
 
 
+class TestMergeDirectories(unittest.TestCase):
+    def _report(self):
+        a, s = flowcsv.analyze_flow_texts([("c", None, CSV)])
+        return flowcsv.to_dict(a, s)
+
+    def _write(self, path, rep):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(rep, fh)
+
+    def test_merge_parent_with_server_subdirs(self):
+        rep = self._report()
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            for srv in ("srv1", "srv2"):
+                sd = os.path.join(d, srv)
+                os.makedirs(sd)
+                self._write(os.path.join(sd, "flow_day_2026-06-18.json"), rep)
+            self.assertEqual(job.run([d], out, merge=True), 0)
+            with open(os.path.join(out, job.REPORT_NAME), encoding="utf-8") as fh:
+                m = json.load(fh)
+            self.assertEqual(m["meta"]["packets"], 2 * rep["meta"]["packets"])
+            self.assertEqual(len(m["conversations"]), len(rep["conversations"]))
+
+    def test_merge_flat_host_prefixed(self):
+        rep = self._report()
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            for srv in ("srv1", "srv2"):
+                self._write(os.path.join(d, srv + "_flow_day_2026-06-18.json"), rep)
+            self.assertEqual(job.run([d], out, merge=True), 0)
+            with open(os.path.join(out, job.REPORT_NAME), encoding="utf-8") as fh:
+                m = json.load(fh)
+            self.assertEqual(m["meta"]["packets"], 2 * rep["meta"]["packets"])
+
+    def test_merge_one_server_many_granularities_no_double_count(self):
+        rep = self._report()
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            for g in ("min", "hour", "day"):
+                self._write(os.path.join(d, "srv1_flow_%s_2026-06-18.json" % g), rep)
+            self.assertEqual(job.run([d], out, merge=True), 0)
+            with open(os.path.join(out, job.REPORT_NAME), encoding="utf-8") as fh:
+                m = json.load(fh)
+            # one server -> only its newest snapshot; min/hour/day must NOT triple-count
+            self.assertEqual(m["meta"]["packets"], rep["meta"]["packets"])
+
+
 if __name__ == "__main__":
     unittest.main()

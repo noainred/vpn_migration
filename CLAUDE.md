@@ -81,8 +81,11 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   paths** preset in ⚙ Settings (`analysis_paths.json`, `/api/analysis/paths`;
   hides the path box on the analysis screen). The portal also has a client-side
   **chained drill-down** (1차→2차→… include/exclude stages re-derived from the
-  shown result, no re-run). Analysis of a directory path auto-expands to its
-  `*.csv`/`*.gz` captures (never crashes on "Is a directory").
+  shown result, no re-run). Analysis of a directory path auto-expands
+  **recursively** (subdirectories included) to its `*.csv`/`*.gz` captures
+  (snapshots skipped; never crashes on "Is a directory"); **merge of a directory
+  loads each server's newest snapshot found recursively** (grouped by dir+host
+  prefix, so one server's min/hour/day snapshots never double-count).
 - `tinc_route_analyzer/web/` — portal (stdlib http.server, no CDN). Auto-detects
   input: aggregated flow JSON (one or many -> merged/deduped), tshark CSV, or
   tinc logs. `static/topology.html` = full-page force-layout topology (pan/zoom).

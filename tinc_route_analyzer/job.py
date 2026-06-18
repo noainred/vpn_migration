@@ -32,6 +32,7 @@ import argparse
 import glob as globmod
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -77,11 +78,46 @@ def _find_captures(root):
     return sorted(out)
 
 
+# snapshot files: ``[<host>_]flow_(min|hour|day)_<key>.json[.gz]``
+_SNAP_RE = re.compile(r"^(?:(?P<host>.+)_)?flow_(?:min|hour|day)_.+\.json(?:\.gz)?$")
+
+
+def _merge_snapshots(root):
+    """Recursively find each server's NEWEST snapshot under ``root``.
+
+    Snapshots are grouped by (containing directory, host prefix) so that — for
+    one server — only the most recent of its min/hour/day snapshots is taken
+    (they are overlapping cumulative aggregates; loading more than one would
+    double-count). This handles all consolidation layouts: one dir per server,
+    several servers' host-prefixed files in one dir, and per-server subdirs.
+    Returns a list of snapshot file paths (newest per server), sorted.
+    """
+    groups = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            if not _SNAP_RE.match(fn):
+                continue
+            host = _SNAP_RE.match(fn).group("host") or ""
+            full = os.path.join(dirpath, fn)
+            try:
+                mt = os.path.getmtime(full)
+            except OSError:
+                continue
+            key = (dirpath, host)
+            cur = groups.get(key)
+            if cur is None or mt > cur[0]:
+                groups[key] = (mt, full)
+    return sorted(v[1] for v in groups.values())
+
+
 def _resolve(paths, merge=False):
     """Expand globs and directories into work items.
 
-    * merge mode: a directory is kept as-is (``load_report`` reads a server's
-      portal_data dir); files/globs are report files.
+    * merge mode: a directory is searched **recursively** for snapshot files —
+      the newest per server (grouped by directory + host prefix) — so a parent
+      that holds several servers' subdirs, or one dir of host-prefixed files,
+      all consolidate correctly without double-counting. Files/globs pass through
+      as report files.
     * analyze mode: a directory is expanded — **recursively, including
       subdirectories** — to the capture files inside it (``*.csv`` / ``*.csv.gz``
       / ``*.gz``), so pointing at e.g. ``/data/tinc/`` reads logs from the whole
@@ -97,8 +133,12 @@ def _resolve(paths, merge=False):
             continue
         if os.path.isdir(p):
             if merge:
-                resolved.append(p)          # load_report() reads a server dir
-            else:                            # analysis needs files -> recurse
+                snaps = _merge_snapshots(p)     # newest per server, recursive
+                if snaps:
+                    resolved.extend(snaps)
+                else:
+                    resolved.append(p)          # fallback: load_report (live.json etc.)
+            else:                                # analysis needs files -> recurse
                 caps = _find_captures(p)
                 if caps:
                     resolved.extend(caps)
