@@ -148,8 +148,92 @@ async function resumeLiveIfRunning() {
   } catch (e) { /* ignore */ }
 }
 
+// ---- server-side analysis job (big captures / multi-server merge) ---------
+function setJobMsg(t, kind) { const el = $("#jobMsg"); if (el) { el.textContent = t || ""; el.className = "msg" + (kind ? " " + kind : ""); } }
+function stopJobPolling() { if (state.jobTimer) { clearInterval(state.jobTimer); state.jobTimer = null; } }
+function startJobPolling() { stopJobPolling(); pollJob(); state.jobTimer = setInterval(pollJob, 1500); }
+function renderJobProgress(j) {
+  const box = $("#jobProgress"); if (!box) return;
+  if (!j || (j.state === "idle" && !j.packets)) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  box.classList.remove("hidden");
+  const running = j.state === "running";
+  const label = { running: "🔄 분석 중", done: "✅ 완료", error: "⚠ 오류", canceled: "■ 중지됨", idle: "대기" }[j.state] || j.state;
+  const parts = [
+    `<b>${esc(label)}</b>`,
+    j.mode === "merge" ? "통합(merge)" : "분석",
+    `파일 ${num(j.files_total)}개`,
+    j.bytes_total ? `입력 ${fmtBytes(j.bytes_total)}` : "",
+    `패킷 ${num(j.packets)}`,
+    running ? `${Math.round(j.pps || 0).toLocaleString()} pkt/s` : "",
+    `경과 ${j.elapsed || 0}s`,
+    j.current ? `현재 <code>${esc(j.current)}</code>` : "",
+  ].filter(Boolean);
+  let html = (running ? `<span class="pulse"></span> ` : "") + parts.join(" · ");
+  if (j.summary && j.state === "done")
+    html += `<div class="muted" style="margin-top:4px">호스트 ${num(j.summary.hosts)} · 통신쌍 ${num(j.summary.conversations)} · 서비스 ${num(j.summary.services)} · ${fmtBytes(j.summary.bytes)}</div>`;
+  if (j.missing && j.missing.length)
+    html += `<div class="muted" style="margin-top:4px">경로 없음: ${esc(j.missing.join(", "))}</div>`;
+  box.innerHTML = html;
+}
+async function startJob() {
+  const paths = ($("#jobPaths").value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!paths.length) { setJobMsg("분석할 서버 경로를 입력하세요.", "err"); return; }
+  setJobMsg("작업 시작 중…");
+  const body = { paths, workers: Number($("#jobWorkers").value) || 1,
+    noTime: $("#jobNoTime").checked, merge: $("#jobMerge").checked };
+  try {
+    const j = await (await fetch("/api/job/start", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+    if (!j.ok) { setJobMsg(j.error || "시작 실패", "err"); return; }
+    setJobMsg("분석 작업이 백그라운드에서 실행 중입니다… 완료되면 결과가 자동 표시됩니다.", "ok");
+    renderJobProgress(j);
+    startJobPolling();
+  } catch (e) { setJobMsg("요청 실패: " + e, "err"); }
+}
+async function cancelJob() {
+  try { await fetch("/api/job/cancel", { method: "POST" }); } catch (e) { /* */ }
+  setJobMsg("중지 요청을 보냈습니다…");
+}
+async function pollJob() {
+  let j;
+  try { j = await (await fetch("/api/job/status")).json(); } catch (e) { return; }
+  if (!j || !j.ok) return;
+  renderJobProgress(j);
+  if (j.state === "running") return;
+  stopJobPolling();
+  if (j.state === "done") { setJobMsg("분석 완료 — 결과를 불러옵니다…", "ok"); await loadJobResult(); }
+  else if (j.state === "canceled") setJobMsg("작업을 중지했습니다.", "");
+  else if (j.state === "error") setJobMsg("작업 실패: " + (j.error || ""), "err");
+}
+async function loadJobResult() {
+  try {
+    const json = await (await fetch("/api/job/result")).json();
+    if (!json.ok) { setJobMsg(json.error || "결과 로드 실패", "err"); return; }
+    state.result = json;
+    renderFlow(json);
+    setupExports("flow", json);
+    els.results.classList.remove("hidden");
+    els.results.scrollIntoView({ behavior: "smooth", block: "start" });
+    const m = json.data.meta;
+    setJobMsg(`완료 — 패킷 ${num(m.packets)}, 호스트 ${m.hosts}, 통신쌍 ${m.conversations}, 서비스 ${m.services}`, "ok");
+  } catch (e) { setJobMsg("결과 로드 실패: " + e, "err"); }
+}
+async function resumeJobIfRunning() {
+  // After a refresh, reconnect to a job that is still running (or load a finished one).
+  try {
+    const j = await (await fetch("/api/job/status")).json();
+    if (!j || !j.ok) return;
+    if (j.state === "running") { renderJobProgress(j); startJobPolling(); }
+    else if (j.state === "done" && j.hasResult && !document.body.classList.contains("capturing")) {
+      renderJobProgress(j);
+      if (!state.result) await loadJobResult();   // don't clobber an upload already shown
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function analyze() {
   stopLivePolling();
+  stopJobPolling();
   setCapturing(false);
   if (!state.files.length) { setMsg("파일을 먼저 추가하세요.", "err"); return; }
   setMsg("분석 중…");
@@ -188,6 +272,7 @@ async function loadSample() {
 }
 function clearAll() {
   stopLivePolling();
+  stopJobPolling();
   setCapturing(false);
   state.files = []; state.result = null; state.selectedIp = null;
   els.subnetDump.value = ""; els.hostMap.value = "";
@@ -793,6 +878,8 @@ function init() {
   $("#btnLiveStart").addEventListener("click", startLive);
   $("#btnLiveStop").addEventListener("click", stopLive);
   $("#btnLiveStopBar").addEventListener("click", stopLive);
+  $("#btnJobStart").addEventListener("click", startJob);
+  $("#btnJobCancel").addEventListener("click", cancelJob);
   $("#btnFullTopo").addEventListener("click", openFullTopo);
   $("#btnPersistApply").addEventListener("click", applyPersist);
   $("#btnSettings").addEventListener("click", () => toggleSettings());
@@ -812,5 +899,6 @@ function init() {
   pollSys();
   setInterval(pollSys, 3000);
   resumeLiveIfRunning();   // reconnect to an in-progress capture after refresh
+  resumeJobIfRunning();    // reconnect to an in-progress server-side analysis job
 }
 document.addEventListener("DOMContentLoaded", init);

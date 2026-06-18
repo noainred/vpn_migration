@@ -144,6 +144,30 @@
     </section>
     </div>
 
+    <!-- Server-side analysis job: process big captures / merge servers in the portal -->
+    <section class="panel controls controls-job">
+      <h2>🖥 서버에서 직접 분석 — 대용량 캡처 · 다중 서버 통합</h2>
+      <p class="bignote">서버에 저장된 캡처 CSV(<code>.csv</code>/<code>.gz</code>, 수십 GB)나 각 서버의
+        <code>portal_data</code> 디렉터리를 포탈이 <b>스트리밍 단일 패스</b>로 직접 분석합니다. 무거운 처리는
+        포탈과 <b>분리된 별도 프로세스</b>에서 수행되어 포탈을 멈추지 않으며, 포탈을 재시작/업그레이드해도 작업은 계속됩니다.
+        결과는 완료 시 아래 결과 화면에 자동으로 표시됩니다.</p>
+      <label class="field"><span>서버 경로 — 한 줄에 하나 (파일 · 글롭 <code>/caps/*.csv.gz</code> · 디렉터리)</span>
+        <textarea id="jobPaths" rows="4" placeholder="/caps/capture-2026-06-18.csv&#10;/caps/*.csv.gz&#10;/opt/portal_data"></textarea></label>
+      <div class="toggle-row">
+        <label>병렬 워커 <input id="jobWorkers" type="number" min="1" max="64" value="4" style="width:64px" /></label>
+        <label><input type="checkbox" id="jobNoTime" /> 시간 파싱 생략(최대 처리량)</label>
+        <label><input type="checkbox" id="jobMerge" /> 다중 서버 통합(--merge · 통신쌍 중복 제거)</label>
+      </div>
+      <div class="actions">
+        <button id="btnJobStart" class="primary">분석 시작</button>
+        <button id="btnJobCancel" class="ghost">중지</button>
+      </div>
+      <div id="jobProgress" class="job-progress hidden"></div>
+      <p id="jobMsg" class="msg"></p>
+      <p class="hint">보안: 포탈 프로세스 권한으로 서버 파일을 읽습니다. 기본 바인딩은 <code>127.0.0.1</code>(로컬 전용)이며,
+        외부에 노출할 경우 접근 제어를 두세요. 병렬 워커는 입력을 정확한 줄 경계로 분할 후 병합합니다(순차 결과와 비트 동일).</p>
+    </section>
+
     <!-- Results -->
     <section id="results" class="panel results hidden">
       <div class="overview" id="overview"></div>

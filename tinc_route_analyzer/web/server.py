@@ -32,7 +32,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 from . import persistence, updater
-from .. import flowcsv, reporter, version_info
+from .. import flowcsv, job, reporter, version_info
 from ..analyzer import analyze_texts
 from ..flowcsv import FlowAnalysis, iter_flow_records, to_dict
 from ..parser import DEFAULT_YEAR
@@ -492,8 +492,150 @@ class ScanController(object):
         return None, None
 
 
+class JobController(object):
+    """Manage a server-side analysis job (a detached process running the same
+    streaming engine as the CLI). The portal only reads its job.json / report,
+    so the heavy work never blocks the portal and survives a portal restart.
+
+    One job at a time (analysis OR multi-server merge), keyed by the fixed
+    ``job.json``/``job_report.json`` files in the output directory.
+    """
+
+    STALE_SECONDS = 12
+    MAX_WORKERS = 64
+
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+
+    def _status_path(self):
+        return os.path.join(self.out_dir, job.STATUS_NAME)
+
+    def _report_path(self):
+        return os.path.join(self.out_dir, job.REPORT_NAME)
+
+    def _read(self):
+        try:
+            with open(self._status_path(), "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    def _write_status(self, payload):
+        path = self._status_path()
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def is_running(self):
+        d = self._read()
+        if not d or d.get("state") != "running":
+            return False
+        if time.time() - float(d.get("heartbeat", 0)) > self.STALE_SECONDS:
+            return False        # backend died without writing a terminal status
+        pid = d.get("pid")
+        if pid:                 # None during the brief start-up placeholder window
+            try:
+                os.kill(int(pid), 0)
+            except (OSError, ValueError):
+                return False
+        return True
+
+    def status(self):
+        d = self._read() or {}
+        running = self.is_running()
+        state = d.get("state") or "idle"
+        # File says "running" but the process is gone -> surface as an error.
+        if state == "running" and not running:
+            state = "error"
+            d.setdefault("error", "분석 프로세스가 예기치 않게 종료되었습니다")
+        has_result = state == "done" and os.path.exists(self._report_path())
+        return {
+            "running": running, "state": state,
+            "mode": d.get("mode"), "packets": d.get("packets", 0),
+            "bytes_total": d.get("bytes_total", 0), "files_total": d.get("files_total", 0),
+            "elapsed": d.get("elapsed", 0.0), "pps": d.get("pps", 0.0),
+            "current": d.get("current", ""), "inputs": d.get("inputs", []),
+            "missing": d.get("missing", []), "summary": d.get("summary"),
+            "error": d.get("error"), "hasResult": has_result,
+        }
+
+    def start(self, paths, workers=1, parse_times=True, merge=False):
+        if self.is_running():
+            return False, "이미 분석 작업이 실행 중입니다"
+        clean = [str(p).strip() for p in (paths or []) if str(p).strip()]
+        if not clean:
+            return False, "분석할 서버 경로를 한 개 이상 입력하세요"
+        try:
+            workers = max(1, min(self.MAX_WORKERS, int(workers)))
+        except (TypeError, ValueError):
+            workers = 1
+        os.makedirs(self.out_dir, exist_ok=True)
+        # Drop any prior report so hasResult reflects only this run.
+        try:
+            os.remove(self._report_path())
+        except OSError:
+            pass
+        # Write a fresh "running" placeholder BEFORE spawning so a poll right
+        # after start never sees the previous run's stale terminal status. We do
+        # NOT write the status again after spawning, so the child's own writes
+        # (running -> done/error) can never be clobbered. pid is None until the
+        # child takes over; liveness rides on heartbeat freshness meanwhile.
+        now = time.time()
+        self._write_status({
+            "state": "running", "pid": None, "heartbeat": now, "started": now,
+            "mode": "merge" if merge else "analyze", "packets": 0, "pps": 0.0,
+            "elapsed": 0.0, "current": "", "inputs": clean,
+            "files_total": 0, "bytes_total": 0, "missing": [],
+        })
+        argv = [sys.executable, "-m", "tinc_route_analyzer.job",
+                "--out", self.out_dir, "-j", str(workers)]
+        if not parse_times:
+            argv.append("--no-time")
+        if merge:
+            argv.append("--merge")
+        argv.append("--")          # stop option parsing; paths may begin with '-'
+        argv.extend(clean)
+        try:
+            log = open(os.path.join(self.out_dir, "job.log"), "ab")
+            try:                       # child keeps its own dup; close our copy
+                subprocess.Popen(argv, stdout=log, stderr=log,
+                                 stdin=subprocess.DEVNULL,
+                                 start_new_session=True, close_fds=True)
+            finally:
+                log.close()
+        except OSError as exc:
+            self._write_status({"state": "error", "pid": None,
+                                "heartbeat": time.time(), "started": now,
+                                "error": "분석 작업 시작 실패: %s" % exc})
+            return False, "분석 작업 시작 실패: %s" % exc
+        return True, None
+
+    def cancel(self):
+        d = self._read()
+        pid = d and d.get("pid")
+        if pid:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+        return True
+
+    def result(self):
+        """Return the aggregated report dict from the finished job, or None."""
+        try:
+            with open(self._report_path(), "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+
 _CAPTURE_ENABLED = False
 _SCAN = ScanController(persistence.DEFAULT_DIR)
+_JOB = JobController(persistence.DEFAULT_DIR)
 _PERSIST = persistence.Persistence(lambda: _SCAN.data())
 # Last flow result the user viewed, stashed so the full-page topology can load it.
 _LAST_FLOW = {"data": None}
@@ -650,6 +792,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "name": name, "lines": lines})
         elif path == "/api/last":
             self._send_json({"ok": True, "data": _LAST_FLOW["data"]})
+        elif path == "/api/job/status":
+            self._send_json({"ok": True, **_JOB.status()})
+        elif path == "/api/job/result":
+            rep = _JOB.result()
+            if not rep:
+                self._send_json({"ok": False, "error": "결과 리포트가 아직 없습니다"}, 404)
+            else:
+                self._send_json({"ok": True, "mode": "flow", "fromJob": True,
+                                 "data": rep,
+                                 "summaryText": flowcsv.render_summary(rep),
+                                 "exports": _flow_exports(rep)})
         elif path == "/api/capture/config":
             self._send_json({"ok": True, **_load_capture_cfg()})
         elif path == "/api/update/status":
@@ -699,6 +852,19 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json_body() or {}
             _LAST_FLOW["data"] = payload.get("data")
             self._send_json({"ok": True})
+        elif path == "/api/job/start":
+            payload = self._read_json_body() or {}
+            raw = payload.get("paths")
+            paths = re.split(r"[\r\n]+", raw) if isinstance(raw, str) else list(raw or [])
+            ok, err = _JOB.start(
+                paths, workers=payload.get("workers", 1),
+                parse_times=not bool(payload.get("noTime")),
+                merge=bool(payload.get("merge")))
+            self._send_json({"ok": ok, "error": err, **_JOB.status()},
+                            200 if ok else 409)
+        elif path == "/api/job/cancel":
+            _JOB.cancel()
+            self._send_json({"ok": True, **_JOB.status()})
         elif path == "/api/persist/config":
             payload = self._read_json_body()
             if payload is None:
