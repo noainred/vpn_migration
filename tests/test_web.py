@@ -263,5 +263,55 @@ class TestMultiReportMergeAndLast(unittest.TestCase):
         self.assertEqual(res["data"]["meta"]["conversations"], 1)
 
 
+class TestUpdater(unittest.TestCase):
+    def test_archive_round_trip_and_only_newer(self):
+        import io, tarfile, tempfile
+        from tinc_route_analyzer.web import updater
+        with tempfile.TemporaryDirectory() as tmp:
+            code = os.path.join(tmp, "code")
+            os.makedirs(os.path.join(code, "tinc_route_analyzer"))
+            with open(os.path.join(code, "tinc_route_analyzer", "__init__.py"), "w") as fh:
+                fh.write('__version__ = "1.0.0"\n')
+            arc = os.path.join(tmp, "tinc_route_analyzer-2.0.0.tar.gz")
+            with tarfile.open(arc, "w:gz") as tf:
+                d = b'__version__ = "2.0.0"\n'
+                ti = tarfile.TarInfo("tinc_route_analyzer/__init__.py"); ti.size = len(d)
+                tf.addfile(ti, io.BytesIO(d))
+            self.assertEqual(updater.find_newer_archive(tmp, "1.0.0")[1], (2, 0, 0))
+            res = updater.upgrade_from_archive(arc, code, "1.0.0")
+            self.assertTrue(res["ok"]) ; self.assertEqual(res["version"], "2.0.0")
+            self.assertIn('2.0.0', open(os.path.join(code, "tinc_route_analyzer", "__init__.py")).read())
+            self.assertFalse(updater.upgrade_from_archive(arc, code, "9.0.0")["ok"])
+
+    def test_path_escape_member_rejected(self):
+        from tinc_route_analyzer.web import updater
+        self.assertIsNone(updater._accept_member("tinc_route_analyzer/../evil.py"))
+        self.assertIsNone(updater._accept_member("other_pkg/x.py"))
+        self.assertEqual(updater._accept_member("tinc_route_analyzer/web/server.py"), "web/server.py")
+
+    def test_config_never_exposes_token(self):
+        import tempfile
+        from tinc_route_analyzer.web import updater
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = updater.UpdateManager(lambda: "1.0.0", tmp)
+            mgr.set_config({"enabled": True, "token": "secret-pat", "remote_base": "https://x/y"})
+            cfg = mgr.get_config()
+            self.assertNotIn("token", cfg)
+            self.assertTrue(cfg["has_token"])
+            self.assertTrue(cfg["enabled"])
+
+
+class TestCaptureExclude(unittest.TestCase):
+    def test_validation_and_filter(self):
+        from tinc_route_analyzer.web import server
+        self.assertTrue(server._valid_exclude("10.0.0.1"))
+        self.assertTrue(server._valid_exclude("10.93.0.0/16"))
+        self.assertFalse(server._valid_exclude("evil; rm -rf"))
+        self.assertFalse(server._valid_exclude("host 1.2.3.4"))
+        self.assertEqual(server._build_capture_filter([]), "")
+        self.assertEqual(server._build_capture_filter(["10.0.0.1", "10.93.0.0/16"]),
+                         "not (host 10.0.0.1 or net 10.93.0.0/16)")
+
+
 if __name__ == "__main__":
     unittest.main()

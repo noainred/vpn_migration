@@ -29,7 +29,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
     daemon_threads = True
 
-from . import persistence
+from . import persistence, updater
 from .. import flowcsv, reporter, version_info
 from ..analyzer import analyze_texts
 from ..flowcsv import FlowAnalysis, iter_flow_records, to_dict
@@ -198,14 +198,17 @@ def _read_samples() -> list:
 _IFACE_RE = re.compile(r"^[A-Za-z0-9._:@{}\\-]{1,48}$")
 
 
-def _tshark_argv(iface: str) -> list:
-    """Fixed, safe argv (no shell). Only the validated iface is variable."""
-    return ["tshark", "-i", iface, "-l", "-n", "-T", "fields",
-            "-E", "header=y", "-E", "separator=,",
-            "-e", "frame.time", "-e", "ip.src", "-e", "ip.dst",
-            "-e", "tcp.srcport", "-e", "tcp.dstport",
-            "-e", "udp.srcport", "-e", "udp.dstport",
-            "-e", "tcp.flags", "-e", "ip.proto", "-e", "frame.len"]
+def _tshark_argv(iface: str, capture_filter: str = "") -> list:
+    """Fixed, safe argv (no shell). Only the validated iface + BPF filter vary."""
+    argv = ["tshark", "-i", iface, "-l", "-n"]
+    if capture_filter:
+        argv += ["-f", capture_filter]   # BPF; entries are IP/CIDR-validated
+    argv += ["-T", "fields", "-E", "header=y", "-E", "separator=,",
+             "-e", "frame.time", "-e", "ip.src", "-e", "ip.dst",
+             "-e", "tcp.srcport", "-e", "tcp.dstport",
+             "-e", "udp.srcport", "-e", "udp.dstport",
+             "-e", "tcp.flags", "-e", "ip.proto", "-e", "frame.len"]
+    return argv
 
 
 def _list_interfaces() -> list:
@@ -265,10 +268,10 @@ class LiveCapture:
         self.thread.start()
         return True, None
 
-    def start_tshark(self, iface):
+    def start_tshark(self, iface, capture_filter=""):
         def factory():
             self.proc = subprocess.Popen(
-                _tshark_argv(iface), stdout=subprocess.PIPE,
+                _tshark_argv(iface, capture_filter), stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, universal_newlines=True, bufsize=1)
             return self.proc.stdout
         return self._start(factory, iface)
@@ -375,6 +378,51 @@ _CAPTURE_ENABLED = False
 _PERSIST = persistence.Persistence(lambda: _CAPTURE.data_only())
 # Last flow result the user viewed, stashed so the full-page topology can load it.
 _LAST_FLOW = {"data": None}
+# repo root = the directory that contains the tinc_route_analyzer package
+_CODE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_UPDATER = updater.UpdateManager(lambda: version_info()["version"], _CODE_DIR)
+
+# --- capture exclude (IP / subnet) -----------------------------------------
+
+_CAPTURE_CFG_PATH = os.path.join(persistence.DEFAULT_DIR, "capture.json")
+_IPV4_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_CIDR_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
+
+
+def _valid_exclude(entry):
+    return bool(_IPV4_HOST_RE.match(entry) or _CIDR_RE.match(entry))
+
+
+def _build_capture_filter(excludes):
+    """Build a BPF filter that drops the given hosts/subnets (validated)."""
+    terms = []
+    for e in excludes:
+        e = (e or "").strip()
+        if _CIDR_RE.match(e):
+            terms.append("net " + e)
+        elif _IPV4_HOST_RE.match(e):
+            terms.append("host " + e)
+    return ("not (" + " or ".join(terms) + ")") if terms else ""
+
+
+def _load_capture_cfg():
+    try:
+        with open(_CAPTURE_CFG_PATH, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        if isinstance(cfg, dict) and isinstance(cfg.get("exclude"), list):
+            return {"exclude": [str(x) for x in cfg["exclude"]]}
+    except (OSError, ValueError):
+        pass
+    return {"exclude": []}
+
+
+def _save_capture_cfg(cfg):
+    try:
+        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
+        with open(_CAPTURE_CFG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+    except OSError:
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -471,6 +519,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "name": name, "lines": lines})
         elif path == "/api/last":
             self._send_json({"ok": True, "data": _LAST_FLOW["data"]})
+        elif path == "/api/capture/config":
+            self._send_json({"ok": True, **_load_capture_cfg()})
+        elif path == "/api/update/status":
+            self._send_json({"ok": True, **_UPDATER.status()})
+        elif path == "/api/update/config":
+            self._send_json({"ok": True, "config": _UPDATER.get_config()})
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -526,6 +580,34 @@ class Handler(BaseHTTPRequestHandler):
                                  "error": "저장 위치를 쓸 수 없습니다: %s" % exc}, 400)
                 return
             self._send_json({"ok": True, "config": cfg})
+        elif path == "/api/capture/config":
+            payload = self._read_json_body() or {}
+            raw = payload.get("exclude") or []
+            cleaned, bad = [], []
+            for e in raw:
+                e = str(e).strip()
+                if not e:
+                    continue
+                (cleaned if _valid_exclude(e) else bad).append(e)
+            if bad:
+                self._send_json({"ok": False,
+                                 "error": "유효하지 않은 항목(IP 또는 CIDR): " + ", ".join(bad)}, 400)
+                return
+            _save_capture_cfg({"exclude": cleaned})
+            self._send_json({"ok": True, "exclude": cleaned,
+                             "filter": _build_capture_filter(cleaned)})
+        elif path == "/api/update/config":
+            payload = self._read_json_body() or {}
+            self._send_json({"ok": True, "config": _UPDATER.set_config(payload)})
+        elif path == "/api/update/check":
+            self._send_json(_UPDATER.check())
+        elif path == "/api/update/apply":
+            self._send_json(_UPDATER.apply())
+        elif path == "/api/update/restart":
+            # Respond first, then re-exec the process shortly after.
+            self._send_json({"ok": True, "restarting": True})
+            threading.Thread(target=lambda: (time.sleep(0.7), _UPDATER and updater.restart_process()),
+                             daemon=True).start()
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -543,9 +625,10 @@ class Handler(BaseHTTPRequestHandler):
         if not shutil.which("tshark"):
             self._send_json({"ok": False, "error": "서버에 tshark가 설치되어 있지 않습니다."}, 400)
             return
-        ok, err = _CAPTURE.start_tshark(iface)
-        self._send_json({"ok": ok, "error": err, "running": _CAPTURE.is_running()},
-                        200 if ok else 409)
+        capfilter = _build_capture_filter(_load_capture_cfg().get("exclude", []))
+        ok, err = _CAPTURE.start_tshark(iface, capfilter)
+        self._send_json({"ok": ok, "error": err, "running": _CAPTURE.is_running(),
+                         "filter": capfilter}, 200 if ok else 409)
 
     def log_message(self, fmt, *args):  # keep the console quiet but informative
         print(f"[portal] {self.address_string()} {fmt % args}")
@@ -558,6 +641,7 @@ def run(host: str = "127.0.0.1", port: int = 8080) -> None:
     print(f"live packet capture: {'ENABLED' if _CAPTURE_ENABLED else 'disabled'}"
           + ("" if _CAPTURE_ENABLED else " (start with --enable-capture)"))
     _PERSIST.start()
+    _UPDATER.start()
     print(f"snapshot store: {_PERSIST.get_config()['save_dir']} "
           "(configure cadence/path in the portal)")
     print("press Ctrl+C to stop")
