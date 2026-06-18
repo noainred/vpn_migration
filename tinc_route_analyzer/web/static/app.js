@@ -730,6 +730,9 @@ function gauge(pct, label) {
   return `<div class="gauge ${cls}"><span style="width:${Math.min(100, pct)}%"></span></div><div class="muted" style="font-size:11px;margin-top:3px">${esc(label)}</div>`;
 }
 async function pollSys() {
+  // The system/storage dashboard is a collection-server view; skip polling it
+  // (it is hidden) while in 분석 서버 mode. Resumes on the next tick after switching.
+  if (document.body.classList.contains("mode-analyze")) return;
   let j;
   try { j = await (await fetch("/api/sysstatus")).json(); } catch (e) { return; }
   if (!j || !j.ok) return;
