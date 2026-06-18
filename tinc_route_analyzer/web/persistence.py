@@ -16,6 +16,8 @@ import gzip
 import os
 import shutil
 import threading
+import re
+import socket
 import time
 from datetime import datetime
 
@@ -28,6 +30,20 @@ DEFAULT_DIR = os.path.join(os.getcwd(), "portal_data")
 _GRANS = ("minute", "hour", "day")
 _KEYFMT = {"minute": "%Y-%m-%d_%H%M", "hour": "%Y-%m-%d_%H", "day": "%Y-%m-%d"}
 _PREFIX = {"minute": "flow_min", "hour": "flow_hour", "day": "flow_day"}
+# snapshot tokens used to recognise our files even with a host prefix
+_TOKENS = tuple(p + "_" for p in _PREFIX.values())   # ("flow_min_", "flow_hour_", "flow_day_")
+
+
+def hostname_label(override=""):
+    """Sanitised host label for snapshot filenames (override wins, else hostname)."""
+    raw = (override or "").strip() or socket.gethostname() or "host"
+    return re.sub(r"[^A-Za-z0-9._-]", "-", raw)[:40] or "host"
+
+
+def is_snapshot(name):
+    """A snapshot file, with or without a '<host>_' prefix."""
+    return (name.endswith(".json") or name.endswith(".json.gz")) \
+        and any(t in name for t in _TOKENS)
 
 _cpu_sampler = {"t": None, "cpu": None}
 
@@ -67,10 +83,6 @@ def _peak_rss_bytes():
     return 0
 
 
-def _is_snapshot(name):
-    return name.endswith(".json") or name.endswith(".json.gz")
-
-
 def list_files(save_dir):
     """All snapshot files in ``save_dir`` (newest first)."""
     _total, files = _saved_files(save_dir)
@@ -84,7 +96,7 @@ def head_file(save_dir, name, n=100):
     traversal). Transparently decompresses ``.gz``.
     """
     base = os.path.basename(name or "")
-    if base != name or not base.startswith("flow_") or not _is_snapshot(base):
+    if base != name or not is_snapshot(base):
         return None
     path = os.path.join(save_dir, base)
     if not os.path.isfile(path):
@@ -110,7 +122,7 @@ def _saved_files(save_dir):
     except OSError:
         return 0, []
     for name in names:
-        if not name.startswith("flow_") or not _is_snapshot(name):
+        if not is_snapshot(name):
             continue
         fp = os.path.join(save_dir, name)
         try:
@@ -154,7 +166,8 @@ class Persistence(object):
         self.snapshot_fn = snapshot_fn
         self._lock = threading.Lock()
         self.config = {"save_dir": DEFAULT_DIR, "minute": False, "hour": False,
-                       "day": False, "retention": 0, "compress": False}
+                       "day": False, "retention": 0, "compress": False,
+                       "host_label": ""}   # "" -> use the machine hostname
         self.last = {"minute": None, "hour": None, "day": None}
         self.last_paths = {"minute": None, "hour": None, "day": None}
         self._stop = False
@@ -184,6 +197,7 @@ class Persistence(object):
                 "day": bool(cfg.get("day")),
                 "retention": max(0, int(cfg.get("retention") or 0)),
                 "compress": bool(cfg.get("compress")),
+                "host_label": (cfg.get("host_label") or "").strip(),
             }
         self._save_config()
         return self.get_config()
@@ -226,16 +240,20 @@ class Persistence(object):
                 data = self.snapshot_fn()
                 if not data or data.get("meta", {}).get("packets", 0) <= 0:
                     return  # nothing collected yet; try again next tick
-            path = self._write(cfg["save_dir"], gran, key, data, cfg.get("compress"))
+            path = self._write(cfg["save_dir"], gran, key, data,
+                               cfg.get("compress"), cfg.get("host_label"))
             with self._lock:
                 self.last[gran] = key
                 self.last_paths[gran] = path
             self._retain(cfg["save_dir"], gran, cfg["retention"])
 
-    def _write(self, save_dir, gran, key, data, compress=False):
+    def _write(self, save_dir, gran, key, data, compress=False, host_label=""):
         os.makedirs(save_dir, exist_ok=True)
         ext = ".json.gz" if compress else ".json"
-        path = os.path.join(save_dir, "%s_%s%s" % (_PREFIX[gran], key, ext))
+        host = hostname_label(host_label)
+        # "<host>_flow_<gran>_<key>.json" so files from different servers don't
+        # collide when collected into one folder for merging.
+        path = os.path.join(save_dir, "%s_%s_%s%s" % (host, _PREFIX[gran], key, ext))
         tmp = path + ".tmp"
         # indent=2 so files stay human-readable for the "first 100 lines" preview;
         # gzip handles the size when 압축 저장 is on.
@@ -253,7 +271,7 @@ class Persistence(object):
             return
         try:
             names = sorted(n for n in os.listdir(save_dir)
-                           if n.startswith(_PREFIX[gran] + "_") and _is_snapshot(n))
+                           if (_PREFIX[gran] + "_") in n and is_snapshot(n))
         except OSError:
             return
         for name in names[:-keep]:

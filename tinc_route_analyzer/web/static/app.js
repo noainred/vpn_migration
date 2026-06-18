@@ -570,6 +570,7 @@ async function loadPersistConfig() {
     const j = await (await fetch("/api/persist/config")).json();
     const c = j.config || {};
     $("#saveDir").value = c.save_dir || "";
+    $("#hostLabel").value = c.host_label || "";
     $("#persMinute").checked = !!c.minute; $("#persHour").checked = !!c.hour;
     $("#persDay").checked = !!c.day; $("#persRetention").value = c.retention || 0;
     $("#persCompress").checked = !!c.compress;
@@ -579,7 +580,7 @@ async function applyPersist() {
   const body = { save_dir: $("#saveDir").value, minute: $("#persMinute").checked,
     hour: $("#persHour").checked, day: $("#persDay").checked,
     retention: Number($("#persRetention").value) || 0,
-    compress: $("#persCompress").checked };
+    compress: $("#persCompress").checked, host_label: $("#hostLabel").value };
   const el = $("#persistMsg");
   try {
     const j = await (await fetch("/api/persist/config", { method: "POST",

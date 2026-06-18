@@ -1035,7 +1035,9 @@ def load_report(path):
         snaps = []
         try:
             for n in os.listdir(path):
-                if n.startswith("flow_") and (n.endswith(".json") or n.endswith(".json.gz")):
+                # match flow_min/hour/day snapshots, with or without a "<host>_" prefix
+                if (n.endswith(".json") or n.endswith(".json.gz")) and \
+                        ("flow_min_" in n or "flow_hour_" in n or "flow_day_" in n):
                     snaps.append(os.path.join(path, n))
         except OSError:
             return None

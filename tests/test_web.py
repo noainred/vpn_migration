@@ -200,11 +200,14 @@ class TestPersistenceAndDashboard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             captured = {"meta": {"packets": 5}, "conversations": [], "hosts": []}
             p = persistence.Persistence(lambda: captured)
-            cfg = p.set_config({"save_dir": tmp, "minute": True, "retention": 0})
+            cfg = p.set_config({"save_dir": tmp, "minute": True, "retention": 0,
+                                "host_label": "srv1"})
             self.assertEqual(cfg["save_dir"], os.path.abspath(tmp))
             p._tick()  # one cadence pass; should write a minute snapshot
-            files = [f for f in os.listdir(tmp) if f.startswith("flow_min")]
+            files = [f for f in os.listdir(tmp) if "flow_min_" in f]
             self.assertEqual(len(files), 1)
+            # host label prefixed so files from different servers don't collide
+            self.assertTrue(files[0].startswith("srv1_flow_min_"))
             # no data -> no write
             p2 = persistence.Persistence(lambda: {"meta": {"packets": 0}})
             p2.set_config({"save_dir": tmp, "minute": True})

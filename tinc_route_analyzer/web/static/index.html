@@ -38,6 +38,8 @@
           <h3>스냅샷 저장 (분/시/일)</h3>
           <label class="field"><span>저장 위치(서버 경로)</span>
             <input id="saveDir" type="text" placeholder="/var/lib/portal_data" /></label>
+          <label class="field"><span>호스트 라벨(저장 파일 접두사 · 비우면 서버 hostname 자동)</span>
+            <input id="hostLabel" type="text" placeholder="(자동: hostname) → 파일명 예: srv1_flow_day_….json" /></label>
           <div class="toggle-row">
             <label><input type="checkbox" id="persMinute" /> 분</label>
             <label><input type="checkbox" id="persHour" /> 시간</label>
