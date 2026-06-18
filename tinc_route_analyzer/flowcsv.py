@@ -852,7 +852,10 @@ def analyze_flow_files(
     stats = {"files": 0, "records": 0, "sources": [], "unreadable": []}
     readable = []
     for path in paths:
-        if os.path.exists(path):
+        if os.path.isdir(path):     # analysis reads files; never crash on a dir
+            stats["unreadable"].append(
+                (path, "is a directory (use a glob like /dir/*.csv, or --merge)"))
+        elif os.path.exists(path):
             readable.append(path)
         else:
             stats["unreadable"].append((path, "not found"))

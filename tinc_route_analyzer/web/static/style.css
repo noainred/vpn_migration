@@ -90,6 +90,22 @@ body.capturing .controls-job { display: none; }
 .jobfilter textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace;
   font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
 .jobfilter .toggle-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 8px 0; font-size: 13px; }
+.preset-row { border-bottom: 1px dashed var(--line); padding-bottom: 10px; margin-bottom: 4px; }
+.preset-row select { border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; font-size: 13px; }
+
+/* drill-down stage filters (chained include/exclude on the result) */
+.drilldown { margin: 4px 0 14px; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 11px; background: #fafbff; }
+.drill-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.drill-head .hint { flex: 1 1 220px; }
+.stage-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.stage-row .stage-no { font-weight: 700; color: var(--accent); min-width: 30px; }
+.stage-row select, .stage-row input { border: 1px solid var(--line); border-radius: 7px;
+  padding: 6px 8px; font-size: 13px; box-sizing: border-box; }
+.stage-row .st-ip { flex: 2 1 220px; }
+.stage-row .st-proto, .stage-row .st-port { flex: 1 1 120px; }
+.stage-row .st-rm { background: #fde8e8; color: #c0392b; cursor: pointer; }
+#drillSummary { margin-top: 8px; }
 
 .panel {
   background: var(--panel); border: 1px solid var(--line);

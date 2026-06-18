@@ -785,6 +785,63 @@ def _save_analysis_filter(spec):
         pass
 
 
+# --- default analysis server paths (pre-set in Settings) --------------------
+
+_ANALYSIS_PATHS_PATH = os.path.join(persistence.DEFAULT_DIR, "analysis_paths.json")
+
+
+def _load_analysis_paths():
+    try:
+        with open(_ANALYSIS_PATHS_PATH, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        if isinstance(cfg, dict) and isinstance(cfg.get("paths"), list):
+            return [str(x) for x in cfg["paths"]]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _save_analysis_paths(paths):
+    cleaned = [str(p).strip() for p in (paths or []) if str(p).strip()]
+    try:
+        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
+        with open(_ANALYSIS_PATHS_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"paths": cleaned}, fh, ensure_ascii=False)
+    except OSError:
+        pass
+    return cleaned
+
+
+# --- named filter presets (save a filter, pick it later) --------------------
+
+_ANALYSIS_PRESETS_PATH = os.path.join(persistence.DEFAULT_DIR, "analysis_presets.json")
+
+
+def _load_presets():
+    try:
+        with open(_ANALYSIS_PRESETS_PATH, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        if isinstance(cfg, dict) and isinstance(cfg.get("presets"), list):
+            out = []
+            for p in cfg["presets"]:
+                if isinstance(p, dict) and p.get("name"):
+                    spec, _bad = _clean_filter_spec(p.get("filter") or {})
+                    out.append({"name": str(p["name"]), "filter": spec})
+            return out
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _save_presets(presets):
+    try:
+        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
+        with open(_ANALYSIS_PRESETS_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"presets": presets}, fh, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "tinc-route-analyzer-portal"
 
@@ -892,6 +949,10 @@ class Handler(BaseHTTPRequestHandler):
                                  "exports": _flow_exports(rep)})
         elif path == "/api/analysis/filter":
             self._send_json({"ok": True, "filter": _load_analysis_filter()})
+        elif path == "/api/analysis/paths":
+            self._send_json({"ok": True, "paths": _load_analysis_paths()})
+        elif path == "/api/analysis/presets":
+            self._send_json({"ok": True, "presets": _load_presets()})
         elif path == "/api/capture/config":
             self._send_json({"ok": True, **_load_capture_cfg()})
         elif path == "/api/update/status":
@@ -945,6 +1006,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json_body() or {}
             raw = payload.get("paths")
             paths = re.split(r"[\r\n]+", raw) if isinstance(raw, str) else list(raw or [])
+            paths = [p for p in (s.strip() for s in paths) if p]
+            if not paths:                       # fall back to Settings default paths
+                paths = _load_analysis_paths()
             spec, bad = _clean_filter_spec(payload.get("filter"))
             if bad:
                 self._send_json({"ok": False, "error":
@@ -970,6 +1034,31 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _save_analysis_filter(spec)
             self._send_json({"ok": True, "filter": spec})
+        elif path == "/api/analysis/paths":
+            payload = self._read_json_body() or {}
+            raw = payload.get("paths")
+            lst = re.split(r"[\r\n]+", raw) if isinstance(raw, str) else list(raw or [])
+            self._send_json({"ok": True, "paths": _save_analysis_paths(lst)})
+        elif path == "/api/analysis/presets":
+            payload = self._read_json_body() or {}
+            action = payload.get("action") or "save"
+            name = (payload.get("name") or "").strip()
+            presets = _load_presets()
+            if action == "delete":
+                presets = [p for p in presets if p["name"] != name]
+            else:
+                if not name:
+                    self._send_json({"ok": False, "error": "프리셋 이름을 입력하세요"}, 400)
+                    return
+                spec, bad = _clean_filter_spec(payload.get("filter"))
+                if bad:
+                    self._send_json({"ok": False, "error":
+                                     "유효하지 않은 필터 항목: " + ", ".join(bad)}, 400)
+                    return
+                presets = [p for p in presets if p["name"] != name]
+                presets.append({"name": name, "filter": spec})
+            _save_presets(presets)
+            self._send_json({"ok": True, "presets": presets})
         elif path == "/api/persist/config":
             payload = self._read_json_body()
             if payload is None:

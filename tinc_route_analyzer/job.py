@@ -54,10 +54,17 @@ def _atomic_write_json(path, payload):
     os.replace(tmp, path)
 
 
-def _resolve(paths):
-    """Expand globs; keep directories (for --merge) and existing files.
+def _resolve(paths, merge=False):
+    """Expand globs and directories into work items.
 
-    Returns ``(resolved, missing)``.  Order is preserved; glob matches are
+    * merge mode: a directory is kept as-is (``load_report`` reads a server's
+      portal_data dir); files/globs are report files.
+    * analyze mode: a directory is expanded to the capture files inside it
+      (``*.csv`` / ``*.csv.gz`` / ``*.gz``), because analysis reads files — this
+      is what makes pointing at e.g. ``/data/tinc/`` work instead of failing
+      with "Is a directory".
+
+    Returns ``(resolved, missing)``.  Order is preserved; glob/dir matches are
     sorted so parallel chunking is deterministic.
     """
     resolved, missing = [], []
@@ -66,7 +73,16 @@ def _resolve(paths):
         if not p:
             continue
         if os.path.isdir(p):
-            resolved.append(p)
+            if merge:
+                resolved.append(p)          # load_report() reads a server dir
+            else:                            # analysis needs files -> expand
+                caps = sorted(globmod.glob(os.path.join(p, "*.csv"))
+                              + globmod.glob(os.path.join(p, "*.csv.gz"))
+                              + globmod.glob(os.path.join(p, "*.gz")))
+                if caps:
+                    resolved.extend(caps)
+                else:
+                    missing.append(p + " (디렉터리에 .csv/.gz 캡처 없음)")
             continue
         matched = sorted(globmod.glob(p))
         if matched:
@@ -102,7 +118,7 @@ def run(paths, out_dir, workers=1, parse_times=True, merge=False,
     status_path = os.path.join(out_dir, STATUS_NAME)
     report_path = os.path.join(out_dir, REPORT_NAME)
     started = time.time()
-    resolved, missing = _resolve(paths)
+    resolved, missing = _resolve(paths, merge=merge)
     flt = FlowFilter.from_spec(filter_spec)
     shared = {"packets": 0, "current": "", "done": False}
     cancel = {"v": False}

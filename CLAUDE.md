@@ -76,7 +76,13 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   `filter_analysis`): exclude by source/destination IP or subnet, protocol, and
   port + top-N row limit. Applied per-packet for raw CSV (`filter_basis=packet`)
   and at conversation/service level for merge (`aggregate`). Last-used options
-  persist in `analysis_filter.json` (`/api/analysis/filter`).
+  persist in `analysis_filter.json` (`/api/analysis/filter`); named **presets**
+  in `analysis_presets.json` (`/api/analysis/presets`); **default analysis
+  paths** preset in ⚙ Settings (`analysis_paths.json`, `/api/analysis/paths`;
+  hides the path box on the analysis screen). The portal also has a client-side
+  **chained drill-down** (1차→2차→… include/exclude stages re-derived from the
+  shown result, no re-run). Analysis of a directory path auto-expands to its
+  `*.csv`/`*.gz` captures (never crashes on "Is a directory").
 - `tinc_route_analyzer/web/` — portal (stdlib http.server, no CDN). Auto-detects
   input: aggregated flow JSON (one or many -> merged/deduped), tshark CSV, or
   tinc logs. `static/topology.html` = full-page force-layout topology (pan/zoom).

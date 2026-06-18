@@ -1,7 +1,8 @@
 "use strict";
 
 // ---- state ----------------------------------------------------------------
-const state = { files: [], result: null, liveTimer: null };
+const state = { files: [], result: null, liveTimer: null, jobTimer: null,
+  stages: [], presets: [], analysisPaths: [] };
 const $ = (sel) => document.querySelector(sel);
 const els = {
   drop: $("#dropzone"), input: $("#fileInput"), list: $("#fileList"),
@@ -160,22 +161,94 @@ function readFilterFromUI() {
   return { exclude_src: lines("fltSrc"), exclude_dst: lines("fltDst"),
     exclude_proto: protos, exclude_port: ports, limit: Number($("#fltLimit").value) || 0 };
 }
+function setFilterUI(f) {
+  f = f || {};
+  $("#fltSrc").value = (f.exclude_src || []).join("\n");
+  $("#fltDst").value = (f.exclude_dst || []).join("\n");
+  const protos = (f.exclude_proto || []).map((x) => String(x).toUpperCase());
+  $("#fltTcp").checked = protos.includes("TCP");
+  $("#fltUdp").checked = protos.includes("UDP");
+  $("#fltIcmp").checked = protos.includes("ICMP");
+  $("#fltProtoExtra").value = protos.filter((p) => !["TCP", "UDP", "ICMP"].includes(p)).join(", ");
+  $("#fltPorts").value = (f.exclude_port || []).join(", ");
+  $("#fltLimit").value = f.limit || 0;
+  const any = (f.exclude_src || []).length || (f.exclude_dst || []).length
+    || protos.length || (f.exclude_port || []).length || f.limit;
+  if (any) { const d = document.querySelector(".jobfilter"); if (d) d.open = true; }
+}
 async function loadAnalysisFilter() {
+  try { setFilterUI((await (await fetch("/api/analysis/filter")).json()).filter || {}); }
+  catch (e) { /* ignore */ }
+}
+// ---- saved filter presets (named list; select to populate; manual run) ----
+async function loadPresets(selectName) {
   try {
-    const f = (await (await fetch("/api/analysis/filter")).json()).filter || {};
-    $("#fltSrc").value = (f.exclude_src || []).join("\n");
-    $("#fltDst").value = (f.exclude_dst || []).join("\n");
-    const protos = (f.exclude_proto || []).map((x) => String(x).toUpperCase());
-    $("#fltTcp").checked = protos.includes("TCP");
-    $("#fltUdp").checked = protos.includes("UDP");
-    $("#fltIcmp").checked = protos.includes("ICMP");
-    $("#fltProtoExtra").value = protos.filter((p) => !["TCP", "UDP", "ICMP"].includes(p)).join(", ");
-    $("#fltPorts").value = (f.exclude_port || []).join(", ");
-    $("#fltLimit").value = f.limit || 0;
-    const any = (f.exclude_src || []).length || (f.exclude_dst || []).length
-      || protos.length || (f.exclude_port || []).length || f.limit;
-    const d = document.querySelector(".jobfilter"); if (d && any) d.open = true;
+    const presets = (await (await fetch("/api/analysis/presets")).json()).presets || [];
+    state.presets = presets;
+    const sel = $("#filterPreset");
+    sel.innerHTML = `<option value="">— 저장된 필터 (${presets.length}) —</option>`
+      + presets.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
+    if (selectName) sel.value = selectName;
   } catch (e) { /* ignore */ }
+}
+function onPresetSelect() {
+  const p = (state.presets || []).find((x) => x.name === $("#filterPreset").value);
+  if (p) setFilterUI(p.filter);     // populate the form; do NOT run (user clicks 분석 시작)
+}
+async function savePreset() {
+  const name = (window.prompt("저장할 필터 이름", $("#filterPreset").value || "") || "").trim();
+  if (!name) return;
+  const el = $("#filterMsg");
+  try {
+    const j = await (await fetch("/api/analysis/presets", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "save", name, filter: readFilterFromUI() }) })).json();
+    if (!j.ok) { el.textContent = j.error || "저장 실패"; el.className = "msg err"; return; }
+    el.textContent = `필터 '${name}' 저장됨`; el.className = "msg ok";
+    await loadPresets(name);
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+}
+async function deletePreset() {
+  const name = $("#filterPreset").value;
+  if (!name) { const el = $("#filterMsg"); el.textContent = "삭제할 저장 필터를 선택하세요"; el.className = "msg err"; return; }
+  try {
+    await fetch("/api/analysis/presets", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", name }) });
+    await loadPresets();
+    const el = $("#filterMsg"); el.textContent = `'${name}' 삭제됨`; el.className = "msg";
+  } catch (e) { /* ignore */ }
+}
+// ---- default analysis server paths (set in ⚙ Settings, used by 분석 서버) --
+async function loadAnalysisPaths() {
+  try {
+    const paths = (await (await fetch("/api/analysis/paths")).json()).paths || [];
+    state.analysisPaths = paths;
+    if ($("#analysisPaths")) $("#analysisPaths").value = paths.join("\n");
+    applyJobPathsVisibility(paths);
+  } catch (e) { /* ignore */ }
+}
+function applyJobPathsVisibility(paths) {
+  const has = !!(paths && paths.length);
+  const field = $("#jobPathsField"), note = $("#jobPathsNote");
+  if (field) field.classList.toggle("hidden", has);
+  if (note) {
+    note.classList.toggle("hidden", !has);
+    if (has) note.innerHTML = `경로는 ⚙ 설정에 지정됨: <code>${esc(paths.join(", "))}</code>`;
+  }
+}
+async function applyAnalysisPaths() {
+  const lst = ($("#analysisPaths").value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const el = $("#analysisPathsMsg");
+  try {
+    const j = await (await fetch("/api/analysis/paths", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: lst }) })).json();
+    state.analysisPaths = j.paths || [];
+    applyJobPathsVisibility(state.analysisPaths);
+    el.textContent = state.analysisPaths.length
+      ? `저장됨 (${state.analysisPaths.length}개) · 분석 화면 입력란 숨김` : "비움 — 분석 화면에서 직접 입력";
+    el.className = "msg ok";
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
 }
 async function saveAnalysisFilter() {
   const el = $("#filterMsg");
@@ -215,8 +288,9 @@ function renderJobProgress(j) {
   box.innerHTML = html;
 }
 async function startJob() {
-  const paths = ($("#jobPaths").value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  if (!paths.length) { setJobMsg("분석할 서버 경로를 입력하세요.", "err"); return; }
+  let paths = ($("#jobPaths").value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!paths.length && (state.analysisPaths || []).length) paths = state.analysisPaths.slice();
+  if (!paths.length) { setJobMsg("분석할 서버 경로를 입력하세요 (또는 ⚙ 설정에서 기본 경로 지정).", "err"); return; }
   setJobMsg("작업 시작 중…");
   const body = { paths, workers: Number($("#jobWorkers").value) || 1,
     noTime: $("#jobNoTime").checked, merge: $("#jobMerge").checked,
@@ -250,6 +324,7 @@ async function loadJobResult() {
     const json = await (await fetch("/api/job/result")).json();
     if (!json.ok) { setJobMsg(json.error || "결과 로드 실패", "err"); return; }
     state.result = json;
+    state.stages = [];          // fresh result -> reset drill-down stages
     renderFlow(json);
     setupExports("flow", json);
     els.results.classList.remove("hidden");
@@ -275,6 +350,7 @@ async function analyze() {
   stopLivePolling();
   stopJobPolling();
   setCapturing(false);
+  state.stages = [];          // fresh result -> reset drill-down stages
   if (!state.files.length) { setMsg("파일을 먼저 추가하세요.", "err"); return; }
   setMsg("분석 중…");
   const payload = {
@@ -314,7 +390,7 @@ function clearAll() {
   stopLivePolling();
   stopJobPolling();
   setCapturing(false);
-  state.files = []; state.result = null; state.selectedIp = null;
+  state.files = []; state.result = null; state.selectedIp = null; state.stages = [];
   els.subnetDump.value = ""; els.hostMap.value = "";
   renderFileList(); els.results.classList.add("hidden"); setMsg("");
 }
@@ -384,13 +460,137 @@ function drawGraph(container, legend, nodes, edges, legendHtml) {
   container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"><g>${e}</g><g>${g}</g></svg>`;
 }
 
+// ---- drill-down stage filters (chained include/exclude on the result) -----
+function ip2int(ip) {
+  const p = String(ip).split("."); if (p.length !== 4) return null;
+  let n = 0; for (const o of p) { const x = Number(o); if (!Number.isInteger(x) || x < 0 || x > 255) return null; n = n * 256 + x; }
+  return n >>> 0;
+}
+function cidrMatch(ip, net, bits) {
+  const a = ip2int(ip), b = ip2int(net); bits = Number(bits);
+  if (a === null || b === null || !(bits >= 0 && bits <= 32)) return false;
+  if (bits === 0) return true;
+  const mask = bits === 32 ? 0xffffffff : (~((1 << (32 - bits)) - 1)) >>> 0;
+  return ((a & mask) >>> 0) === ((b & mask) >>> 0);
+}
+function entryMatchesIp(entry, ip) {
+  entry = String(entry).trim(); if (!entry) return false;
+  if (entry.indexOf("/") >= 0) { const s = entry.split("/"); return cidrMatch(ip, s[0], s[1]); }
+  return entry === ip;
+}
+function ipInList(ip, list) { return (list || []).some((e) => entryMatchesIp(e, ip)); }
+function subnetOf(ip) { const p = String(ip).split("."); return (p.length === 4 && String(ip).indexOf(":") < 0) ? `${p[0]}.${p[1]}.${p[2]}.0/24` : String(ip); }
+function stageActive(st) { return !!(st && (st.ip.length || st.proto.length || st.port.length)); }
+function stagePass(match, st) { return st.mode === "exclude" ? !match : match; }
+function matchConv(c, st) {
+  if (st.ip.length && !(ipInList(c.a, st.ip) || ipInList(c.b, st.ip))) return false;
+  if (st.proto.length && !(c.protocols || []).some((p) => st.proto.includes(String(p).toUpperCase()))) return false;
+  if (st.port.length && !(c.services || []).some((s) => s.port != null && st.port.includes(s.port))) return false;
+  return true;
+}
+function matchSvc(s, st) {
+  if (st.ip.length && !(ipInList(s.server, st.ip) || (s.clients || []).some((c) => ipInList(c, st.ip)))) return false;
+  if (st.proto.length && !st.proto.includes(String(s.proto).toUpperCase())) return false;
+  if (st.port.length && !st.port.includes(s.port)) return false;
+  return true;
+}
+function applyStagesToData(d) {
+  const stages = (state.stages || []).filter(stageActive);
+  if (!stages.length) return d;
+  const convs = d.conversations.filter((c) => stages.every((st) => stagePass(matchConv(c, st), st)));
+  const base = {}; (d.hosts || []).forEach((h) => { base[h.ip] = h; });
+  const hmap = {};
+  const ens = (ip) => { if (!hmap[ip]) { const b = base[ip] || {}; hmap[ip] = { ip, subnet: b.subnet || subnetOf(ip), role: b.role || "peer", services_offered: b.services_offered || [], first_seen: b.first_seen, last_seen: b.last_seen, sent_bytes: 0, recv_bytes: 0, sent_packets: 0, recv_packets: 0, _peers: new Set() }; } return hmap[ip]; };
+  convs.forEach((c) => {
+    const A = ens(c.a), B = ens(c.b);
+    A.sent_bytes += c.a_to_b_bytes; A.recv_bytes += c.b_to_a_bytes; A.sent_packets += c.a_to_b_packets; A.recv_packets += c.b_to_a_packets; A._peers.add(c.b);
+    B.sent_bytes += c.b_to_a_bytes; B.recv_bytes += c.a_to_b_bytes; B.sent_packets += c.b_to_a_packets; B.recv_packets += c.a_to_b_packets; B._peers.add(c.a);
+  });
+  const shown = new Set(Object.keys(hmap));
+  const hosts = Object.values(hmap).map((h) => ({ ip: h.ip, subnet: h.subnet, role: h.role, services_offered: h.services_offered, peers: [...h._peers], peer_count: h._peers.size, sent_bytes: h.sent_bytes, recv_bytes: h.recv_bytes, sent_packets: h.sent_packets, recv_packets: h.recv_packets, total_bytes: h.sent_bytes + h.recv_bytes, first_seen: h.first_seen, last_seen: h.last_seen })).sort((a, b) => b.total_bytes - a.total_bytes);
+  const services = (d.services || []).filter((s) => stages.every((st) => stagePass(matchSvc(s, st), st)) && shown.has(s.server))
+    .map((s) => { const cl = (s.clients || []).filter((c) => shown.has(c)); return Object.assign({}, s, { clients: cl, client_count: cl.length, source_subnets: [...new Set(cl.map(subnetOf))] }); })
+    .filter((s) => s.clients.length);
+  const sm = {};
+  convs.forEach((c) => {
+    const k = [subnetOf(c.a), subnetOf(c.b)].sort(); const key = k.join("|");
+    const e = sm[key] || (sm[key] = { a: k[0], b: k[1], packets: 0, bytes: 0, _hp: new Set(), services: [] });
+    e.packets += c.packets; e.bytes += c.bytes; e._hp.add([c.a, c.b].sort().join("|"));
+    (c.services || []).forEach((sv) => { if (sv.label && !e.services.some((x) => x.label === sv.label)) e.services.push(sv); });
+  });
+  const subnet_matrix = Object.values(sm).map((e) => ({ a: e.a, b: e.b, packets: e.packets, bytes: e.bytes, host_pairs: e._hp.size, services: e.services })).sort((a, b) => b.bytes - a.bytes);
+  const act = d.activity || {};
+  return Object.assign({}, d, { conversations: convs, hosts, services, subnet_matrix, activity: Object.assign({}, act, { hosts: (act.hosts || []).filter((h) => shown.has(h.ip)) }) });
+}
+function stageRowHTML(st, i) {
+  return `<div class="stage-row" data-i="${i}">
+    <span class="stage-no">${i + 1}차</span>
+    <select class="st-mode">
+      <option value="include"${st.mode !== "exclude" ? " selected" : ""}>포함만</option>
+      <option value="exclude"${st.mode === "exclude" ? " selected" : ""}>제외</option></select>
+    <input class="st-ip" placeholder="IP/서브넷 (10.0.0.5, 10.93.0.0/16)" value="${esc((st.ip || []).join(", "))}" />
+    <input class="st-proto" placeholder="프로토콜 (tcp, udp)" value="${esc((st.proto || []).join(", "))}" />
+    <input class="st-port" placeholder="포트 (443, 22)" value="${esc((st.port || []).join(", "))}" />
+    <button class="st-rm chip" type="button" title="이 단계 제거">✕</button></div>`;
+}
+function readStagesFromUI() {
+  const out = [];
+  document.querySelectorAll("#stageList .stage-row").forEach((row) => {
+    const split = (sel) => (row.querySelector(sel).value || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    out.push({
+      mode: row.querySelector(".st-mode").value,
+      ip: split(".st-ip"),
+      proto: split(".st-proto").map((s) => s.toUpperCase()),
+      port: split(".st-port").map(Number).filter((n) => Number.isInteger(n)),
+    });
+  });
+  return out;
+}
+function renderStageControls() {
+  const list = $("#stageList"); if (!list) return;
+  if (list.dataset.n === String(state.stages.length)) return;   // structure unchanged -> keep focus
+  list.innerHTML = state.stages.length
+    ? state.stages.map((st, i) => stageRowHTML(st, i)).join("")
+    : `<p class="muted" style="margin:6px 2px">단계 없음 — [+ 단계 추가]로 1차 필터를 만드세요.</p>`;
+  list.dataset.n = String(state.stages.length);
+  list.querySelectorAll(".stage-row").forEach((row) => {
+    row.querySelector(".st-mode").addEventListener("change", onDrillChange);
+    row.querySelectorAll("input").forEach((inp) => inp.addEventListener("input", onDrillChange));
+    row.querySelector(".st-rm").addEventListener("click", () => {
+      state.stages = readStagesFromUI(); state.stages.splice(+row.dataset.i, 1);
+      renderStageControls(); applyDrill();
+    });
+  });
+}
+function onDrillChange() { state.stages = readStagesFromUI(); applyDrill(); }
+function applyDrill() { if (state.result && state.result.mode === "flow") renderFlow(state.result); }
+function addStage() { state.stages = readStagesFromUI(); state.stages.push({ mode: "include", ip: [], proto: [], port: [] }); renderStageControls(); applyDrill(); }
+function clearStages() { state.stages = []; renderStageControls(); applyDrill(); }
+function renderDrillSummary(full, d) {
+  const el = $("#drillSummary"); if (!el) return;
+  const active = (state.stages || []).filter(stageActive).length;
+  if (!active) { el.textContent = "단계를 추가하면 결과가 즉시 좁혀집니다 (포함만/제외 · IP·서브넷 · 프로토콜 · 포트). 1차→2차→3차…"; return; }
+  el.innerHTML = `적용된 단계 ${active}개 — 통신쌍 <b>${num(d.conversations.length)}</b>/${num(full.conversations.length)} · `
+    + `호스트 <b>${num(d.hosts.length)}</b>/${num(full.hosts.length)} · 서비스 <b>${num(d.services.length)}</b>/${num(full.services.length)} · `
+    + `서브넷 <b>${num(d.subnet_matrix.length)}</b>/${num(full.subnet_matrix.length)}`;
+}
+
 // ---- FLOW (tshark CSV) rendering ------------------------------------------
 function renderFlow(json) {
-  const d = json.data, m = d.meta;
+  const full = json.data, m = full.meta;
+  const d = applyStagesToData(full);          // drill-down view (identity when no stages)
+  $("#drilldown").classList.remove("hidden");
+  renderStageControls();
+  renderDrillSummary(full, d);
+  const drilling = (state.stages || []).some(stageActive);
+  const fpk = d.conversations.reduce((a, c) => a + (c.packets || 0), 0);
+  const fby = d.conversations.reduce((a, c) => a + (c.bytes || 0), 0);
   els.overview.innerHTML = [
-    card("패킷", num(m.packets)), card("바이트", fmtBytes(m.bytes)),
-    card("호스트", m.hosts), card("통신쌍", m.conversations),
-    card("서비스", m.services),
+    card("패킷", drilling ? num(fpk) : num(m.packets), drilling ? "/ " + num(m.packets) : ""),
+    card("바이트", drilling ? fmtBytes(fby) : fmtBytes(m.bytes), drilling ? "/ " + fmtBytes(m.bytes) : ""),
+    card("호스트", drilling ? d.hosts.length : m.hosts, drilling ? "/ " + m.hosts : ""),
+    card("통신쌍", drilling ? d.conversations.length : m.conversations, drilling ? "/ " + m.conversations : ""),
+    card("서비스", drilling ? d.services.length : m.services, drilling ? "/ " + m.services : ""),
   ].join("");
 
   // 수집상태
@@ -585,6 +785,7 @@ function renderActivity(d) {
 
 // ---- TINC log rendering ---------------------------------------------------
 function renderTinc(json) {
+  $("#drilldown").classList.add("hidden");   // drill-down stages apply to flow only
   const d = json.data;
   const logged = d.nodes.filter((n) => n.has_log).length;
   const relayed = d.communication_pairs.filter((p) => p.via.length || p.forwarded_packets).length;
@@ -668,7 +869,7 @@ function renderTinc(json) {
 // ---- full-screen topology --------------------------------------------------
 function currentGraph() {
   const json = state.result; if (!json) return null;
-  const d = json.data;
+  const d = json.mode === "flow" ? applyStagesToData(json.data) : json.data;
   if (json.mode === "flow") {
     return {
       title: "flow topology",
@@ -953,6 +1154,12 @@ function init() {
   $("#btnJobStart").addEventListener("click", startJob);
   $("#btnJobCancel").addEventListener("click", cancelJob);
   $("#btnFilterSave").addEventListener("click", saveAnalysisFilter);
+  $("#filterPreset").addEventListener("change", onPresetSelect);
+  $("#btnPresetSave").addEventListener("click", savePreset);
+  $("#btnPresetDelete").addEventListener("click", deletePreset);
+  $("#btnAnalysisPaths").addEventListener("click", applyAnalysisPaths);
+  $("#btnAddStage").addEventListener("click", addStage);
+  $("#btnClearStages").addEventListener("click", clearStages);
   $("#btnFullTopo").addEventListener("click", openFullTopo);
   $("#btnPersistApply").addEventListener("click", applyPersist);
   $("#btnSettings").addEventListener("click", () => toggleSettings());
@@ -971,6 +1178,8 @@ function init() {
   loadVersion();
   loadPersistConfig();
   loadAnalysisFilter();
+  loadPresets();
+  loadAnalysisPaths();
   pollSys();
   setInterval(pollSys, 3000);
   resumeLiveIfRunning();   // reconnect to an in-progress capture after refresh

@@ -146,5 +146,34 @@ class TestJobController(unittest.TestCase):
             self.assertGreater(rep["meta"]["packets"], 0)
 
 
+class TestDirectoryHandling(unittest.TestCase):
+    def test_analyze_expands_directory(self):
+        # Pointing analysis at a DIRECTORY must analyse the captures inside it,
+        # not fail with "Is a directory" (the reported bug).
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "cap.csv"), "w", encoding="utf-8") as fh:
+                fh.write(CSV)
+            rc = job.run([d], d, workers=4)          # workers>1 = the crash path
+            self.assertEqual(rc, 0)
+            with open(os.path.join(d, job.STATUS_NAME), encoding="utf-8") as fh:
+                st = json.load(fh)
+            self.assertEqual(st["state"], "done")
+            self.assertEqual(st["packets"], 3)
+
+    def test_directory_without_captures_is_clean_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc = job.run([d], d, workers=1)
+            self.assertEqual(rc, 1)
+            with open(os.path.join(d, job.STATUS_NAME), encoding="utf-8") as fh:
+                st = json.load(fh)
+            self.assertEqual(st["state"], "error")
+
+    def test_analyze_flow_files_skips_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            an, stats = flowcsv.analyze_flow_files([d], workers=4)
+            self.assertEqual(an.packets, 0)
+            self.assertTrue(any("director" in msg for _p, msg in stats["unreadable"]))
+
+
 if __name__ == "__main__":
     unittest.main()

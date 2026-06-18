@@ -166,5 +166,37 @@ class TestServerFilterValidation(unittest.TestCase):
                 websrv._ANALYSIS_FILTER_PATH = saved
 
 
+class TestPresetsAndPaths(unittest.TestCase):
+    def test_presets_save_load_delete(self):
+        with tempfile.TemporaryDirectory() as d:
+            saved = websrv._ANALYSIS_PRESETS_PATH
+            websrv._ANALYSIS_PRESETS_PATH = os.path.join(d, "presets.json")
+            try:
+                self.assertEqual(websrv._load_presets(), [])
+                spec, _ = websrv._clean_filter_spec({"exclude_proto": ["udp"], "limit": 10})
+                websrv._save_presets([{"name": "no-udp", "filter": spec}])
+                got = websrv._load_presets()
+                self.assertEqual(len(got), 1)
+                self.assertEqual(got[0]["name"], "no-udp")
+                self.assertIn("UDP", got[0]["filter"]["exclude_proto"])
+                websrv._save_presets([p for p in got if p["name"] != "no-udp"])
+                self.assertEqual(websrv._load_presets(), [])
+            finally:
+                websrv._ANALYSIS_PRESETS_PATH = saved
+
+    def test_default_paths_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            saved = websrv._ANALYSIS_PATHS_PATH
+            websrv._ANALYSIS_PATHS_PATH = os.path.join(d, "paths.json")
+            try:
+                self.assertEqual(websrv._load_analysis_paths(), [])
+                out = websrv._save_analysis_paths(["/data/tinc/*.csv", "  ", "/opt/portal_data"])
+                self.assertEqual(out, ["/data/tinc/*.csv", "/opt/portal_data"])
+                self.assertEqual(websrv._load_analysis_paths(),
+                                 ["/data/tinc/*.csv", "/opt/portal_data"])
+            finally:
+                websrv._ANALYSIS_PATHS_PATH = saved
+
+
 if __name__ == "__main__":
     unittest.main()
