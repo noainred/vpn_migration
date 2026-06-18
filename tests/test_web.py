@@ -367,6 +367,35 @@ class TestScanBackendDecoupling(unittest.TestCase):
         self.assertIn("-f", argv)
         self.assertIn("not (host 10.0.0.1)", argv)
 
+    def test_resume_seeds_from_previous_live_json(self):
+        import tempfile, time
+        from tinc_route_analyzer import scan, flowcsv
+        with tempfile.TemporaryDirectory() as tmp:
+            a, _ = flowcsv.analyze_flow_texts([("n", None, FLOW_CSV)])
+            d = flowcsv.to_dict(a)
+            lp = os.path.join(tmp, "live.json")
+            scan.write_live(lp, {"running": False, "heartbeat": time.time(),
+                                 "pid": os.getpid(), "data": d})
+            seeded = scan._load_previous(lp)
+            self.assertIsNotNone(seeded)
+            self.assertEqual(seeded.packets, d["meta"]["packets"])   # carries over
+            # empty/missing -> no seed (fresh start)
+            self.assertIsNone(scan._load_previous(os.path.join(tmp, "nope.json")))
+
+
+class TestUpdaterAuth(unittest.TestCase):
+    def test_basic_vs_bearer(self):
+        from tinc_route_analyzer.web import updater
+        # internal/Nexus: user:pass -> HTTP Basic
+        r = updater._auth_request("http://nexus/repo/download/versions.json", "user:pass")
+        self.assertTrue(r.get_header("Authorization").startswith("Basic "))
+        # GitHub PAT (no colon) -> Bearer
+        r2 = updater._auth_request("https://api.github.com/repos/o/r/contents/d?ref=b", "ghp_xxx")
+        self.assertEqual(r2.get_header("Authorization"), "Bearer ghp_xxx")
+        self.assertEqual(r2.get_header("Accept"), "application/vnd.github.raw")
+        # no token -> no auth header
+        self.assertIsNone(updater._auth_request("http://nexus/x", None).get_header("Authorization"))
+
 
 class TestCaptureExclude(unittest.TestCase):
     def test_validation_and_filter(self):

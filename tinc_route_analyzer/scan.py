@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-from .flowcsv import FlowAnalysis, iter_flow_records, to_dict
+from .flowcsv import FlowAnalysis, analysis_from_report, iter_flow_records, to_dict
 
 LIVE_NAME = "live.json"
 
@@ -49,11 +49,25 @@ def write_live(path, payload):
     os.replace(tmp, path)
 
 
-def run(iface, capture_filter, out_dir, interval=2.0):
+def _load_previous(live_path):
+    """Reconstruct a FlowAnalysis from a prior live.json (for resume), or None."""
+    try:
+        with open(live_path, "r", encoding="utf-8") as fh:
+            prev = json.load(fh)
+        data = prev.get("data")
+        if data and data.get("meta", {}).get("packets", 0) > 0:
+            return analysis_from_report(data)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def run(iface, capture_filter, out_dir, interval=2.0, resume=False):
     os.makedirs(out_dir, exist_ok=True)
     live_path = os.path.join(out_dir, LIVE_NAME)
     lock = threading.Lock()
-    state = {"a": FlowAnalysis(), "err": "", "running": True}
+    seed = _load_previous(live_path) if resume else None
+    state = {"a": seed if seed is not None else FlowAnalysis(), "err": "", "running": True}
     stop = {"v": False}
     reset = {"v": False}
     started = time.time()
@@ -78,7 +92,7 @@ def run(iface, capture_filter, out_dir, interval=2.0):
     if hasattr(signal, "SIGUSR1"):
         signal.signal(signal.SIGUSR1, on_reset)
 
-    pps_state = {"t": started, "p": 0}
+    pps_state = {"t": started, "p": state["a"].packets}   # baseline = resumed count
 
     def snapshot(running):
         with lock:
@@ -139,8 +153,10 @@ def main(argv=None):
     p.add_argument("--filter", default="", help="prebuilt BPF (validated by caller)")
     p.add_argument("--out", required=True, help="output dir for live.json")
     p.add_argument("--interval", type=float, default=2.0)
+    p.add_argument("--resume", action="store_true",
+                   help="continue accumulating from the existing live.json")
     args = p.parse_args(argv)
-    return run(args.iface, args.filter, args.out, args.interval)
+    return run(args.iface, args.filter, args.out, args.interval, resume=args.resume)
 
 
 if __name__ == "__main__":  # pragma: no cover

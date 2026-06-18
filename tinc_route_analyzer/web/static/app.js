@@ -647,14 +647,16 @@ function toggleSettings(show) {
 }
 async function loadCaptureCfg() {
   try { const j = await (await fetch("/api/capture/config")).json();
-    $("#captureExclude").value = (j.exclude || []).join("\n"); } catch (e) { /* */ }
+    $("#captureExclude").value = (j.exclude || []).join("\n");
+    $("#captureResume").checked = (j.resume !== false); } catch (e) { /* */ }
 }
 async function applyCaptureCfg() {
   const list = $("#captureExclude").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const el = $("#captureMsg");
   try {
     const j = await (await fetch("/api/capture/config", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exclude: list }) })).json();
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exclude: list, resume: $("#captureResume").checked }) })).json();
     if (j.ok) { el.textContent = "저장됨 · 필터: " + (j.filter || "(없음)") + " · 다음 캡처부터 적용"; el.className = "msg ok"; }
     else { el.textContent = j.error || "실패"; el.className = "msg err"; }
   } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }

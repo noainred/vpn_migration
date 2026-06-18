@@ -410,7 +410,7 @@ class ScanController(object):
                 return False
         return True
 
-    def start(self, iface, capture_filter):
+    def start(self, iface, capture_filter, resume=True):
         if self.is_running():
             return False, "이미 캡처 중입니다 (백엔드 실행 중)"
         os.makedirs(self.out_dir, exist_ok=True)
@@ -418,6 +418,8 @@ class ScanController(object):
                 "--iface", iface, "--out", self.out_dir]
         if capture_filter:
             argv += ["--filter", capture_filter]
+        if resume:
+            argv += ["--resume"]
         try:
             log = open(os.path.join(self.out_dir, "scan.log"), "ab")
             subprocess.Popen(argv, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
@@ -527,10 +529,11 @@ def _load_capture_cfg():
         with open(_CAPTURE_CFG_PATH, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
         if isinstance(cfg, dict) and isinstance(cfg.get("exclude"), list):
-            return {"exclude": [str(x) for x in cfg["exclude"]]}
+            return {"exclude": [str(x) for x in cfg["exclude"]],
+                    "resume": bool(cfg.get("resume", True))}
     except (OSError, ValueError):
         pass
-    return {"exclude": []}
+    return {"exclude": [], "resume": True}   # resume ON by default
 
 
 def _save_capture_cfg(cfg):
@@ -710,8 +713,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False,
                                  "error": "유효하지 않은 항목(IP 또는 CIDR): " + ", ".join(bad)}, 400)
                 return
-            _save_capture_cfg({"exclude": cleaned})
-            self._send_json({"ok": True, "exclude": cleaned,
+            resume = bool(payload.get("resume", True))
+            _save_capture_cfg({"exclude": cleaned, "resume": resume})
+            self._send_json({"ok": True, "exclude": cleaned, "resume": resume,
                              "filter": _build_capture_filter(cleaned)})
         elif path == "/api/update/config":
             payload = self._read_json_body() or {}
@@ -742,10 +746,12 @@ class Handler(BaseHTTPRequestHandler):
         if not shutil.which("tshark"):
             self._send_json({"ok": False, "error": "서버에 tshark가 설치되어 있지 않습니다."}, 400)
             return
-        capfilter = _build_capture_filter(_load_capture_cfg().get("exclude", []))
-        ok, err = _SCAN.start(iface, capfilter)
+        cfg = _load_capture_cfg()
+        capfilter = _build_capture_filter(cfg.get("exclude", []))
+        ok, err = _SCAN.start(iface, capfilter, cfg.get("resume", True))
         self._send_json({"ok": ok, "error": err, "running": _SCAN.is_running(),
-                         "filter": capfilter}, 200 if ok else 409)
+                         "filter": capfilter, "resume": cfg.get("resume", True)},
+                        200 if ok else 409)
 
     def log_message(self, fmt, *args):  # keep the console quiet but informative
         print(f"[portal] {self.address_string()} {fmt % args}")

@@ -207,11 +207,20 @@ def _join_url(base, name):
 
 
 def _auth_request(url, token):
+    """Build a request. Token forms:
+      * GitHub PAT (no colon) -> Bearer (+ raw Accept on the contents API);
+      * "user:password" (e.g. Nexus/internal raw repo) -> HTTP Basic.
+    """
     headers = {}
     if token:
-        headers["Authorization"] = "Bearer " + token
-        if "api.github.com" in url:
-            headers["Accept"] = "application/vnd.github.raw"
+        if ":" in token and "api.github.com" not in url:
+            import base64
+            headers["Authorization"] = "Basic " + base64.b64encode(
+                token.encode("utf-8")).decode("ascii")
+        else:
+            headers["Authorization"] = "Bearer " + token
+            if "api.github.com" in url:
+                headers["Accept"] = "application/vnd.github.raw"
     return urllib.request.Request(url, headers=headers)
 
 
