@@ -99,4 +99,9 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   head: the feature branch). A PR already exists for the current feature
   branch, so further pushes to it update that PR automatically; for a new
   feature branch, open a fresh PR into `main` once the work is committed.
+- **Bump `__version__` (`tinc_route_analyzer/__init__.py`) every time work is
+  finished**, then report the **final version** to the user after the PR is
+  updated: semver + the build/commit from `version_info()` (e.g.
+  `v1.5.0 · ab12cd3`). Minor bump for features, patch for fixes. This is a
+  standing rule — do it on every completed change, not only when asked.
 
