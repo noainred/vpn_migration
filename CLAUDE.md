@@ -47,8 +47,14 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
 
 - The toolkit does **not** sniff packets itself (stdlib only). Live = pipe
   `tshark -l` output in: CLI `--stdin --live` (refreshing dashboard) or the
-  portal's live view (`--enable-capture`, server runs tshark in a thread,
-  browser polls `/api/live/status`).
+  portal's live view (`--enable-capture`).
+- **Scan and portal are separate processes.** The portal spawns the scan
+  backend (`tinc_route_analyzer.scan`, a detached `start_new_session` process)
+  which runs tshark + aggregation and writes `portal_data/live.json` (atomic,
+  with heartbeat/pid). The portal only reads that file, so **restarting/
+  upgrading the portal does NOT stop the scan** — `ScanController` reconnects by
+  reading live.json. Control via signals: SIGTERM=stop, SIGUSR1=reset. Portal
+  shutdown must never stop the scan.
 - "End-to-end IP" depends on the capture point: VPN iface (`tun0`) shows inner
   overlay endpoints; physical NIC shows tunnel endpoints; NAT rewrites them.
   State this; never claim true end-to-end from a single mid-path capture.

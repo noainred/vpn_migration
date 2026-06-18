@@ -15,7 +15,9 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -373,9 +375,124 @@ class LiveCapture:
         return None, None
 
 
-_CAPTURE = LiveCapture()
+class ScanController(object):
+    """Manage the standalone scan backend (a detached process) and read its
+    live.json. Because the scan runs in its own process, restarting/upgrading
+    the portal does not stop it — the portal just reconnects by reading the file.
+    """
+
+    STALE_SECONDS = 12
+
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+
+    def _live_path(self):
+        return os.path.join(self.out_dir, "live.json")
+
+    def _read(self):
+        try:
+            with open(self._live_path(), "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    def is_running(self):
+        d = self._read()
+        if not d or not d.get("running"):
+            return False
+        if time.time() - float(d.get("heartbeat", 0)) > self.STALE_SECONDS:
+            return False        # backend died without a clean final write
+        pid = d.get("pid")
+        if pid:
+            try:
+                os.kill(int(pid), 0)
+            except (OSError, ValueError):
+                return False
+        return True
+
+    def start(self, iface, capture_filter):
+        if self.is_running():
+            return False, "이미 캡처 중입니다 (백엔드 실행 중)"
+        os.makedirs(self.out_dir, exist_ok=True)
+        argv = [sys.executable, "-m", "tinc_route_analyzer.scan",
+                "--iface", iface, "--out", self.out_dir]
+        if capture_filter:
+            argv += ["--filter", capture_filter]
+        try:
+            log = open(os.path.join(self.out_dir, "scan.log"), "ab")
+            subprocess.Popen(argv, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                             start_new_session=True, close_fds=True)
+        except OSError as exc:
+            return False, "스캔 백엔드 시작 실패: %s" % exc
+        return True, None
+
+    def _signal(self, sig):
+        d = self._read()
+        pid = d and d.get("pid")
+        if pid:
+            try:
+                os.kill(int(pid), sig)
+                return True
+            except (OSError, ValueError):
+                return False
+        return False
+
+    def stop(self):
+        self._signal(signal.SIGTERM)
+        return True
+
+    def reset(self):
+        if hasattr(signal, "SIGUSR1"):
+            self._signal(signal.SIGUSR1)
+        return True
+
+    def data(self):
+        """Full aggregate dict (for persistence snapshots / exports)."""
+        d = self._read()
+        return (d and d.get("data")) or to_dict(FlowAnalysis())
+
+    def snapshot(self, top=25):
+        d = self._read()
+        running = self.is_running()
+        data = (d and d.get("data")) or to_dict(FlowAnalysis())
+        for key in ("conversations", "hosts", "services", "subnet_matrix"):
+            if isinstance(data.get(key), list):
+                data[key] = data[key][:top]
+        if isinstance(data.get("activity"), dict) and isinstance(data["activity"].get("hosts"), list):
+            data["activity"]["hosts"] = data["activity"]["hosts"][:top]
+        now = time.time()
+        started = float(d.get("started", now)) if d else now
+        return {"running": running, "iface": (d or {}).get("iface"),
+                "error": (d or {}).get("error") or None,
+                "elapsed": round(now - started, 1) if d else 0.0,
+                "pps": (d or {}).get("pps", 0.0), "data": data}
+
+    def brief(self):
+        d = self._read()
+        now = time.time()
+        return {"running": self.is_running(),
+                "packets": (d or {}).get("packets", 0), "iface": (d or {}).get("iface"),
+                "error": (d or {}).get("error"),
+                "elapsed": round(now - float((d or {}).get("started", now)), 1) if d else 0.0}
+
+    def export(self, fmt):
+        d = self.data()
+        if fmt == "conversations":
+            return flowcsv.render_conversations_csv(d), "text/csv"
+        if fmt == "policies":
+            return flowcsv.render_policies_csv(d), "text/csv"
+        if fmt == "hosts":
+            return flowcsv.render_hosts_csv(d), "text/csv"
+        if fmt == "dot":
+            return flowcsv.render_dot(d), "text/vnd.graphviz"
+        if fmt == "json":
+            return json.dumps(d, ensure_ascii=False, indent=2), "application/json"
+        return None, None
+
+
 _CAPTURE_ENABLED = False
-_PERSIST = persistence.Persistence(lambda: _CAPTURE.data_only())
+_SCAN = ScanController(persistence.DEFAULT_DIR)
+_PERSIST = persistence.Persistence(lambda: _SCAN.data())
 # Last flow result the user viewed, stashed so the full-page topology can load it.
 _LAST_FLOW = {"data": None}
 # repo root = the directory that contains the tinc_route_analyzer package
@@ -474,13 +591,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(v)
         elif path == "/api/live/status":
             self._send_json({"ok": True, "mode": "flow", "live": True,
-                             "captureEnabled": _CAPTURE_ENABLED, **_CAPTURE.snapshot()})
+                             "captureEnabled": _CAPTURE_ENABLED, **_SCAN.snapshot()})
         elif path == "/api/live/interfaces":
             self._send_json({"ok": True, "enabled": _CAPTURE_ENABLED,
                              "interfaces": _list_interfaces()})
         elif path == "/api/live/export":
             fmt = (parse_qs(parsed.query).get("fmt") or ["json"])[0]
-            text, ctype = _CAPTURE.export(fmt)
+            text, ctype = _SCAN.export(fmt)
             if text is None:
                 self._send_json({"ok": False, "error": "unknown export format"}, 400)
                 return
@@ -497,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "ok": True,
                 "system": persistence.system_stats(cfg["save_dir"]),
-                "capture": _CAPTURE.brief(),
+                "capture": _SCAN.brief(),
                 "persist": _PERSIST.status(),
                 "captureEnabled": _CAPTURE_ENABLED,
             })
@@ -559,10 +676,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/live/start":
             self._live_start()
         elif path == "/api/live/stop":
-            _CAPTURE.stop()
+            _SCAN.stop()
             self._send_json({"ok": True, "running": False})
         elif path == "/api/live/reset":
-            _CAPTURE.reset_data()
+            _SCAN.reset()
             self._send_json({"ok": True})
         elif path == "/api/last":
             payload = self._read_json_body() or {}
@@ -626,8 +743,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "서버에 tshark가 설치되어 있지 않습니다."}, 400)
             return
         capfilter = _build_capture_filter(_load_capture_cfg().get("exclude", []))
-        ok, err = _CAPTURE.start_tshark(iface, capfilter)
-        self._send_json({"ok": ok, "error": err, "running": _CAPTURE.is_running(),
+        ok, err = _SCAN.start(iface, capfilter)
+        self._send_json({"ok": ok, "error": err, "running": _SCAN.is_running(),
                          "filter": capfilter}, 200 if ok else 409)
 
     def log_message(self, fmt, *args):  # keep the console quiet but informative
@@ -650,7 +767,8 @@ def run(host: str = "127.0.0.1", port: int = 8080) -> None:
     except KeyboardInterrupt:
         print("\nshutting down")
     finally:
-        _CAPTURE.stop()
+        # NB: do NOT stop the scan here — it runs as its own backend process so
+        # it keeps capturing across a portal restart/upgrade.
         httpd.server_close()
 
 

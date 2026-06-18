@@ -331,6 +331,43 @@ class TestUpdater(unittest.TestCase):
             self.assertTrue(cfg["enabled"])
 
 
+class TestScanBackendDecoupling(unittest.TestCase):
+    def test_live_json_contract(self):
+        import tempfile, time
+        from tinc_route_analyzer import scan, flowcsv
+        from tinc_route_analyzer.web.server import ScanController
+        with tempfile.TemporaryDirectory() as tmp:
+            a, _ = flowcsv.analyze_flow_texts([("n", None, FLOW_CSV)])
+            scan.write_live(os.path.join(tmp, "live.json"), {
+                "running": True, "iface": "tun0", "started": time.time(),
+                "heartbeat": time.time(), "pid": os.getpid(), "packets": 2,
+                "pps": 1.0, "error": "", "data": flowcsv.to_dict(a)})
+            sc = ScanController(tmp)
+            self.assertTrue(sc.is_running())               # fresh + this pid alive
+            self.assertEqual(sc.snapshot()["iface"], "tun0")
+            self.assertEqual(len(sc.data()["hosts"]), 2)
+            self.assertIn("node_a", sc.export("conversations")[0])
+
+    def test_stale_or_dead_backend_not_running(self):
+        import tempfile, time
+        from tinc_route_analyzer import scan
+        from tinc_route_analyzer.web.server import ScanController
+        with tempfile.TemporaryDirectory() as tmp:
+            sc = ScanController(tmp)
+            self.assertFalse(sc.is_running())              # no file
+            scan.write_live(os.path.join(tmp, "live.json"), {
+                "running": True, "heartbeat": time.time() - 60, "pid": os.getpid(),
+                "data": {}})
+            self.assertFalse(sc.is_running())              # stale heartbeat
+
+    def test_scan_argv_includes_validated_filter(self):
+        from tinc_route_analyzer import scan
+        argv = scan._tshark_argv("tun0", "not (host 10.0.0.1)")
+        self.assertEqual(argv[:3], ["tshark", "-i", "tun0"])
+        self.assertIn("-f", argv)
+        self.assertIn("not (host 10.0.0.1)", argv)
+
+
 class TestCaptureExclude(unittest.TestCase):
     def test_validation_and_filter(self):
         from tinc_route_analyzer.web import server
