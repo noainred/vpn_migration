@@ -125,6 +125,18 @@ async function stopLive() {
   try { await fetch("/api/live/stop", { method: "POST" }); } catch (e) { /* ignore */ }
   setLiveStatus("캡처를 중지했습니다.");
 }
+async function resumeLiveIfRunning() {
+  // After a page refresh, reconnect to a capture that is still running on the server.
+  try {
+    const json = await (await fetch("/api/live/status")).json();
+    if (json && json.ok && json.running) {
+      els.results.classList.remove("hidden");
+      stopLivePolling();
+      await pollLive();                 // re-renders live view + re-enters capturing mode
+      state.liveTimer = setInterval(pollLive, 2000);
+    }
+  } catch (e) { /* ignore */ }
+}
 
 async function analyze() {
   stopLivePolling();
@@ -668,5 +680,6 @@ function init() {
   loadPersistConfig();
   pollSys();
   setInterval(pollSys, 3000);
+  resumeLiveIfRunning();   // reconnect to an in-progress capture after refresh
 }
 document.addEventListener("DOMContentLoaded", init);
