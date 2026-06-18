@@ -104,4 +104,9 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   updated: semver + the build/commit from `version_info()` (e.g.
   `v1.5.0 · ab12cd3`). Minor bump for features, patch for fixes. This is a
   standing rule — do it on every completed change, not only when asked.
+- **After every completed task, report to the user in this exact order:**
+  (1) the **commit** (short SHA + subject line), then (2) the **GitHub download
+  link** for the current feature branch:
+  `https://github.com/noainred/vpn_migration/archive/refs/heads/<branch>.tar.gz`
+  (also offer the `.zip`). Standing rule — do this every time, not only when asked.
 
