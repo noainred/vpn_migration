@@ -222,6 +222,41 @@ class TestReportMerge(unittest.TestCase):
         self.assertEqual({s["server"] for s in d1["services"]},
                          {s["server"] for s in d2["services"]})
 
+    def test_load_report_from_dir_picks_latest_snapshot(self):
+        import json, os, tempfile, time
+        a, _ = flowcsv.analyze_flow_texts([("n", None, _sample_text())])
+        d = flowcsv.to_dict(a)
+        with tempfile.TemporaryDirectory() as tmp:
+            # a non-report config file + two snapshots; newest must win
+            json.dump({"save_dir": "x"}, open(os.path.join(tmp, "config.json"), "w"))
+            old = {"meta": {"packets": 1}, "conversations": [], "hosts": []}
+            json.dump(old, open(os.path.join(tmp, "flow_min_old.json"), "w"))
+            time.sleep(0.02)
+            json.dump(d, open(os.path.join(tmp, "flow_min_new.json"), "w"))
+            r = flowcsv.load_report(tmp)            # dir -> newest flow_*.json
+            self.assertEqual(r["meta"]["packets"], d["meta"]["packets"])
+
+    def test_load_report_unwraps_live_json(self):
+        import json, os, tempfile
+        a, _ = flowcsv.analyze_flow_texts([("n", None, _sample_text())])
+        d = flowcsv.to_dict(a)
+        with tempfile.TemporaryDirectory() as tmp:
+            json.dump({"running": True, "data": d}, open(os.path.join(tmp, "live.json"), "w"))
+            r = flowcsv.load_report(tmp)            # no flow_* -> live.json, unwrapped
+            self.assertEqual(r["meta"]["hosts"], d["meta"]["hosts"])
+
+    def test_merge_two_server_dirs(self):
+        import json, os, tempfile
+        a, _ = flowcsv.analyze_flow_texts([("n", None, _sample_text())])
+        d = flowcsv.to_dict(a)
+        with tempfile.TemporaryDirectory() as s1, tempfile.TemporaryDirectory() as s2:
+            json.dump(d, open(os.path.join(s1, "flow_day_x.json"), "w"))
+            json.dump(d, open(os.path.join(s2, "flow_day_x.json"), "w"))
+            merged = flowcsv.to_dict(flowcsv.merge_reports(
+                [flowcsv.load_report(s1), flowcsv.load_report(s2)]))
+            self.assertEqual(merged["meta"]["conversations"], d["meta"]["conversations"])
+            self.assertEqual(merged["meta"]["packets"], 2 * d["meta"]["packets"])
+
     def test_merge_dedups_pairs_unions_clients(self):
         a, _ = flowcsv.analyze_flow_texts([("n.csv", None, _sample_text())])
         d = flowcsv.to_dict(a)

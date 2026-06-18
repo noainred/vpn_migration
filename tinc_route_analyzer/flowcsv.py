@@ -1021,6 +1021,41 @@ def merge_reports(reports):
     return base
 
 
+def load_report(path):
+    """Load one flow report from a file OR a server directory.
+
+    * file  -> the report dict (a report.json, a flow_*.json snapshot, or a
+      live.json whose ``data`` is unwrapped); ``.gz`` is decompressed.
+    * dir   -> the NEWEST ``flow_*.json[.gz]`` snapshot in it (one cumulative
+      aggregate per server, so merging several servers does not double count),
+      falling back to ``live.json``.
+    Returns the report dict, or ``None`` if nothing usable is found.
+    """
+    if os.path.isdir(path):
+        snaps = []
+        try:
+            for n in os.listdir(path):
+                if n.startswith("flow_") and (n.endswith(".json") or n.endswith(".json.gz")):
+                    snaps.append(os.path.join(path, n))
+        except OSError:
+            return None
+        if snaps:
+            path = max(snaps, key=lambda p: os.path.getmtime(p))
+        elif os.path.exists(os.path.join(path, "live.json")):
+            path = os.path.join(path, "live.json")
+        else:
+            return None
+    try:
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt", encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if isinstance(obj, dict) and "running" in obj and "data" in obj:
+        return obj.get("data")          # unwrap a live.json
+    return obj if isinstance(obj, dict) else None
+
+
 def _as_dict(data, stats: Optional[dict] = None) -> dict:
     """Accept either a live FlowAnalysis or an already-aggregated dict."""
     return data if isinstance(data, dict) else to_dict(data, stats)
@@ -1242,8 +1277,9 @@ def main(argv=None) -> int:
     p.add_argument("--top", type=int, default=15, metavar="N",
                    help="rows shown in the live dashboard (default: 15)")
     p.add_argument("--merge", action="store_true",
-                   help="inputs are report.json files from several servers; "
-                        "merge them (deduplicating communication pairs) and output")
+                   help="consolidate several servers: inputs are report.json files "
+                        "OR each server's portal_data directory (newest snapshot is "
+                        "used per directory); merges, deduplicating communication pairs")
     p.add_argument("--no-time", action="store_true",
                    help="skip per-packet timestamp parsing for max throughput "
                         "(drops the time-span/duration columns)")
@@ -1263,17 +1299,19 @@ def main(argv=None) -> int:
 
     # Merge mode: combine report.json files from multiple servers.
     if args.merge:
-        reports = []
+        reports, srcs = [], []
         for pth in paths:
-            try:
-                opener = gzip.open if pth.endswith(".gz") else open
-                with opener(pth, "rt", encoding="utf-8") as fh:
-                    reports.append(json.load(fh))
-            except (OSError, ValueError) as exc:
-                print("warning: skipping %s: %s" % (pth, exc), file=sys.stderr)
+            r = load_report(pth)
+            if r:
+                reports.append(r)
+                srcs.append({"name": os.path.basename(pth.rstrip("/")), "records": 0})
+            else:
+                print("warning: no usable report in %s" % pth, file=sys.stderr)
+        if not reports:
+            p.error("no usable reports found to merge "
+                    "(give report.json files or each server's portal_data directory)")
         analysis = merge_reports(reports)
-        stats = {"files": len(reports), "records": analysis.packets,
-                 "sources": [{"name": os.path.basename(p), "records": 0} for p in paths]}
+        stats = {"files": len(reports), "records": analysis.packets, "sources": srcs}
         _render_and_write(analysis, stats, args)
         return 0
 
