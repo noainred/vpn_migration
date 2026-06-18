@@ -35,9 +35,11 @@ body {
 }
 .topbar h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .topbar .sub { margin: 2px 0 0; font-size: 13px; opacity: .9; }
-.topbtn { margin-left: auto; align-self: center; background: rgba(255,255,255,.16); color: #fff;
+.topnav { margin-left: auto; align-self: center; display: flex; gap: 8px; align-items: center; }
+.topbtn { align-self: center; background: rgba(255,255,255,.16); color: #fff;
   border: none; border-radius: 8px; padding: 7px 13px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .topbtn:hover { background: rgba(255,255,255,.28); }
+.mode-btn.active { background: #fff; color: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.18); }
 .appver { align-self: center; font-size: 12px; color: #fff;
   background: rgba(255,255,255,.16); padding: 5px 11px; border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
@@ -61,6 +63,9 @@ main {
 #sysmon { order: 1; }
 .controls-row { order: 2; display: flex; gap: 20px; align-items: flex-start; }
 #results { order: 3; }
+/* role-based workspace: 수집서버 vs 분석 서버 (sysmon + results are shared) */
+body.mode-collect .controls-job { display: none; }
+body.mode-analyze .controls-row { display: none; }
 .controls-file { flex: 1.3 1 0; }
 .controls-live { flex: 1 1 0; }
 @media (max-width: 980px) { .controls-row { flex-direction: column; } }

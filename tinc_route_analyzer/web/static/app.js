@@ -858,6 +858,24 @@ function setupExports(mode, json) {
   });
 }
 
+// ---- workspace mode (수집서버 / 분석 서버) ---------------------------------
+function setMode(mode) {
+  if (mode !== "collect" && mode !== "analyze") mode = "collect";
+  state.mode = mode;
+  document.body.classList.toggle("mode-collect", mode === "collect");
+  document.body.classList.toggle("mode-analyze", mode === "analyze");
+  document.querySelectorAll(".mode-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.mode === mode));
+  try { localStorage.setItem("portalMode", mode); } catch (e) { /* private mode */ }
+}
+function initMode() {
+  document.querySelectorAll(".mode-btn").forEach((b) =>
+    b.addEventListener("click", () => setMode(b.dataset.mode)));
+  let saved = "collect";
+  try { saved = localStorage.getItem("portalMode") || "collect"; } catch (e) { /* */ }
+  setMode(saved);
+}
+
 // ---- wiring ---------------------------------------------------------------
 function bindTabs() {
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
@@ -889,6 +907,7 @@ function init() {
   $("#btnUpdCheck").addEventListener("click", checkUpdate);
   $("#btnUpdApply").addEventListener("click", applyUpdate);
   $("#btnUpdRestart").addEventListener("click", restartUpdate);
+  initMode();
   bindTabs();
   document.addEventListener("click", (e) => {
     const th = e.target.closest && e.target.closest("th.sortable");

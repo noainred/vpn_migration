@@ -6,7 +6,7 @@
   <title>tinc → NSX VPN 마이그레이션 포탈</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body>
+<body class="mode-collect">
   <div id="liveBar" class="livebar hidden">
     <span class="pulse"></span>
     <span id="liveBarText">캡처 중…</span>
@@ -20,7 +20,11 @@
         <h1>tinc → NSX VPN 마이그레이션 포탈</h1>
         <p class="sub">tinc 로그를 업로드하면 노드 간 트래픽 · 라우팅 경로 · 정책 후보를 분석합니다</p>
       </div>
-      <button class="topbtn" id="btnSettings">⚙ 설정</button>
+      <nav class="topnav">
+        <button class="topbtn mode-btn" id="btnModeCollect" data-mode="collect">📡 수집서버</button>
+        <button class="topbtn mode-btn" id="btnModeAnalyze" data-mode="analyze">🖥 분석 서버</button>
+        <button class="topbtn" id="btnSettings">⚙ 설정</button>
+      </nav>
       <span class="appver" id="appVer" title="서버에 배포된 빌드">버전 확인 중…</span>
     </div>
   </header>

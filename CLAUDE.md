@@ -67,9 +67,19 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   (A<->B deduped) / host / service / subnet aggregation, parallel engine,
   reports (summary/csv/json/dot), CLI.
 - `tinc_route_analyzer/{parser,analyzer,reporter,cli}.py` — tinc log analyzer.
+- `tinc_route_analyzer/job.py` — **detached analysis-job backend** (same engine
+  as the CLI; `start_new_session`). Lets the portal analyse big server-side
+  captures or `--merge` several servers' `portal_data` dirs without blocking;
+  writes `job.json`/`job_report.json` (atomic, heartbeat/pid) that the portal
+  reads via `JobController`. SIGTERM cancels. Endpoints `/api/job/{start,status,
+  result,cancel}`.
 - `tinc_route_analyzer/web/` — portal (stdlib http.server, no CDN). Auto-detects
   input: aggregated flow JSON (one or many -> merged/deduped), tshark CSV, or
   tinc logs. `static/topology.html` = full-page force-layout topology (pan/zoom).
+  **Two role workspaces** (top-bar toggle, persisted in localStorage): 수집서버
+  (`body.mode-collect` → file upload + live capture) and 분석 서버
+  (`body.mode-analyze` → server-side direct analysis/merge). System dashboard
+  (`#sysmon`) and results (`#results`) are shared by both; ⚙ 설정 is a common overlay.
 - `tinc_route_analyzer/web/persistence.py` — minute/hour/day snapshot scheduler
   + `system_stats()` (CPU via `resource`, RSS via `/proc/self/status`, disk via
   `shutil.disk_usage`; no psutil). Endpoints: `/api/sysstatus`,
