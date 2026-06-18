@@ -72,7 +72,11 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   captures or `--merge` several servers' `portal_data` dirs without blocking;
   writes `job.json`/`job_report.json` (atomic, heartbeat/pid) that the portal
   reads via `JobController`. SIGTERM cancels. Endpoints `/api/job/{start,status,
-  result,cancel}`.
+  result,cancel}`. **Re-analysis exclusion filter** (`flowcsv.FlowFilter`,
+  `filter_analysis`): exclude by source/destination IP or subnet, protocol, and
+  port + top-N row limit. Applied per-packet for raw CSV (`filter_basis=packet`)
+  and at conversation/service level for merge (`aggregate`). Last-used options
+  persist in `analysis_filter.json` (`/api/analysis/filter`).
 - `tinc_route_analyzer/web/` — portal (stdlib http.server, no CDN). Auto-detects
   input: aggregated flow JSON (one or many -> merged/deduped), tshark CSV, or
   tinc logs. `static/topology.html` = full-page force-layout topology (pan/zoom).
@@ -114,9 +118,13 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   updated: semver + the build/commit from `version_info()` (e.g.
   `v1.5.0 · ab12cd3`). Minor bump for features, patch for fixes. This is a
   standing rule — do it on every completed change, not only when asked.
-- **After every completed task, report to the user in this exact order:**
-  (1) the **commit** (short SHA + subject line), then (2) the **GitHub download
-  link** for the current feature branch:
-  `https://github.com/noainred/vpn_migration/archive/refs/heads/<branch>.tar.gz`
-  (also offer the `.zip`). Standing rule — do this every time, not only when asked.
+- **After every completed task, publish a versioned release bundle and report
+  to the user in this exact order:** (1) the **commit** (short SHA + subject),
+  then (2) the **version-named `.zip` download link**. The bundle is built into
+  `download/` (`tinc_route_analyzer-<ver>.zip` + matching `.tar.gz`, package at
+  top level, no `__pycache__`) and `versions.json` `latest` is bumped to the new
+  version, so the download link is:
+  `https://github.com/noainred/vpn_migration/raw/<branch>/download/tinc_route_analyzer-<ver>.zip`
+  Standing rule — do this every time, not only when asked. (The updater accepts
+  `.zip`, so this keeps auto-update working too.)
 

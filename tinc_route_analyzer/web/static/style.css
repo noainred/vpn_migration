@@ -82,6 +82,12 @@ body.capturing .controls-job { display: none; }
 .job-progress code { background: #f1f3f8; padding: 1px 6px; border-radius: 5px; }
 .job-progress .pulse { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   background: var(--accent); margin-right: 6px; vertical-align: middle; animation: pulse 1.3s infinite; }
+.jobfilter { margin-top: 12px; }
+.jobfilter .filter-grid { display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0; }
+.jobfilter .filter-grid .field { flex: 1 1 280px; }
+.jobfilter textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace;
+  font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
+.jobfilter .toggle-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 8px 0; font-size: 13px; }
 
 .panel {
   background: var(--panel); border: 1px solid var(--line);

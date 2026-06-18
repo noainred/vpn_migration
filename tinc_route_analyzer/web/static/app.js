@@ -148,6 +148,45 @@ async function resumeLiveIfRunning() {
   } catch (e) { /* ignore */ }
 }
 
+// ---- analysis exclusion filter (re-analysis conditions; last-used saved) --
+function readFilterFromUI() {
+  const lines = (id) => ($("#" + id).value || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const protos = [];
+  if ($("#fltTcp").checked) protos.push("TCP");
+  if ($("#fltUdp").checked) protos.push("UDP");
+  if ($("#fltIcmp").checked) protos.push("ICMP");
+  ($("#fltProtoExtra").value || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean).forEach((p) => protos.push(p));
+  const ports = ($("#fltPorts").value || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  return { exclude_src: lines("fltSrc"), exclude_dst: lines("fltDst"),
+    exclude_proto: protos, exclude_port: ports, limit: Number($("#fltLimit").value) || 0 };
+}
+async function loadAnalysisFilter() {
+  try {
+    const f = (await (await fetch("/api/analysis/filter")).json()).filter || {};
+    $("#fltSrc").value = (f.exclude_src || []).join("\n");
+    $("#fltDst").value = (f.exclude_dst || []).join("\n");
+    const protos = (f.exclude_proto || []).map((x) => String(x).toUpperCase());
+    $("#fltTcp").checked = protos.includes("TCP");
+    $("#fltUdp").checked = protos.includes("UDP");
+    $("#fltIcmp").checked = protos.includes("ICMP");
+    $("#fltProtoExtra").value = protos.filter((p) => !["TCP", "UDP", "ICMP"].includes(p)).join(", ");
+    $("#fltPorts").value = (f.exclude_port || []).join(", ");
+    $("#fltLimit").value = f.limit || 0;
+    const any = (f.exclude_src || []).length || (f.exclude_dst || []).length
+      || protos.length || (f.exclude_port || []).length || f.limit;
+    const d = document.querySelector(".jobfilter"); if (d && any) d.open = true;
+  } catch (e) { /* ignore */ }
+}
+async function saveAnalysisFilter() {
+  const el = $("#filterMsg");
+  try {
+    const j = await (await fetch("/api/analysis/filter", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(readFilterFromUI()) })).json();
+    if (j.ok) { el.textContent = "필터 옵션 저장됨"; el.className = "msg ok"; }
+    else { el.textContent = j.error || "실패"; el.className = "msg err"; }
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+}
+
 // ---- server-side analysis job (big captures / multi-server merge) ---------
 function setJobMsg(t, kind) { const el = $("#jobMsg"); if (el) { el.textContent = t || ""; el.className = "msg" + (kind ? " " + kind : ""); } }
 function stopJobPolling() { if (state.jobTimer) { clearInterval(state.jobTimer); state.jobTimer = null; } }
@@ -180,7 +219,8 @@ async function startJob() {
   if (!paths.length) { setJobMsg("분석할 서버 경로를 입력하세요.", "err"); return; }
   setJobMsg("작업 시작 중…");
   const body = { paths, workers: Number($("#jobWorkers").value) || 1,
-    noTime: $("#jobNoTime").checked, merge: $("#jobMerge").checked };
+    noTime: $("#jobNoTime").checked, merge: $("#jobMerge").checked,
+    filter: readFilterFromUI() };
   try {
     const j = await (await fetch("/api/job/start", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
@@ -367,6 +407,17 @@ function renderFlow(json) {
       <tr><th>호스트 / 통신쌍 / 서비스</th><td>${m.hosts} / ${m.conversations} / ${m.services}</td></tr>
     </tbody></table>`;
   if (json.fromReport) st += `<div class="notice">사전 집계된 report.json을 로드했습니다 (스트리밍 CLI 처리 결과).</div>`;
+  if (m.filter || m.limit) {
+    const f = m.filter || {}, bits = [];
+    if ((f.exclude_src || []).length) bits.push("출발지 제외 " + f.exclude_src.join(", "));
+    if ((f.exclude_dst || []).length) bits.push("목적지 제외 " + f.exclude_dst.join(", "));
+    if ((f.exclude_proto || []).length) bits.push("프로토콜 제외 " + f.exclude_proto.join(", "));
+    if ((f.exclude_port || []).length) bits.push("포트 제외 " + f.exclude_port.join(", "));
+    if (m.limit) bits.push("표시 상위 " + m.limit + "개로 제한");
+    const basis = m.filter_basis === "aggregate" ? " · 머지(집계 단위 제외)"
+      : (m.filter_basis === "packet" ? " · 패킷 단위 제외" : "");
+    if (bits.length) st = `<div class="notice">🔎 필터 적용됨${basis}: ${esc(bits.join(" · "))}</div>` + st;
+  }
   $("#tab-status").innerHTML = st;
 
   // 호스트 정보
@@ -898,6 +949,7 @@ function init() {
   $("#btnLiveStopBar").addEventListener("click", stopLive);
   $("#btnJobStart").addEventListener("click", startJob);
   $("#btnJobCancel").addEventListener("click", cancelJob);
+  $("#btnFilterSave").addEventListener("click", saveAnalysisFilter);
   $("#btnFullTopo").addEventListener("click", openFullTopo);
   $("#btnPersistApply").addEventListener("click", applyPersist);
   $("#btnSettings").addEventListener("click", () => toggleSettings());
@@ -915,6 +967,7 @@ function init() {
   });
   loadVersion();
   loadPersistConfig();
+  loadAnalysisFilter();
   pollSys();
   setInterval(pollSys, 3000);
   resumeLiveIfRunning();   // reconnect to an in-progress capture after refresh

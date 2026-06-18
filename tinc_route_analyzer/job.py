@@ -36,7 +36,8 @@ import signal
 import threading
 import time
 
-from .flowcsv import (analyze_flow_files, load_report, merge_reports, to_dict)
+from .flowcsv import (FlowFilter, analyze_flow_files, filter_analysis,
+                      load_report, merge_reports, to_dict)
 
 STATUS_NAME = "job.json"
 REPORT_NAME = "job_report.json"
@@ -89,9 +90,12 @@ def _total_bytes(paths):
     return total
 
 
-def run(paths, out_dir, workers=1, parse_times=True, merge=False, interval=1.5):
+def run(paths, out_dir, workers=1, parse_times=True, merge=False,
+        filter_spec=None, interval=1.5):
     """Analyse ``paths`` and write status + report into ``out_dir``.
 
+    ``filter_spec`` is an optional exclusion dict (see :class:`FlowFilter`):
+    ``{exclude_src, exclude_dst, exclude_proto, exclude_port, limit}``.
     Returns a process exit code (0 ok, 1 error, 130 canceled).
     """
     os.makedirs(out_dir, exist_ok=True)
@@ -99,6 +103,7 @@ def run(paths, out_dir, workers=1, parse_times=True, merge=False, interval=1.5):
     report_path = os.path.join(out_dir, REPORT_NAME)
     started = time.time()
     resolved, missing = _resolve(paths)
+    flt = FlowFilter.from_spec(filter_spec)
     shared = {"packets": 0, "current": "", "done": False}
     cancel = {"v": False}
     base = {
@@ -107,6 +112,7 @@ def run(paths, out_dir, workers=1, parse_times=True, merge=False, interval=1.5):
         "inputs": list(paths), "files_total": len(resolved),
         "missing": missing, "workers": workers, "parse_times": parse_times,
         "bytes_total": _total_bytes(resolved),
+        "filter": flt.summary() if flt else None,
     }
 
     def write(state, **extra):
@@ -186,6 +192,9 @@ def run(paths, out_dir, workers=1, parse_times=True, merge=False, interval=1.5):
                     "통합할 리포트를 찾지 못했습니다 (각 서버의 report.json 또는 "
                     "portal_data 디렉터리를 지정하세요)")
             analysis = merge_reports(reports)
+            if flt is not None:
+                analysis = filter_analysis(analysis, flt)
+            shared["packets"] = analysis.packets
             stats = {"files": len(reports), "records": analysis.packets,
                      "sources": [{"name": os.path.basename(p.rstrip("/")) or p,
                                   "records": 0} for p in resolved]}
@@ -197,9 +206,12 @@ def run(paths, out_dir, workers=1, parse_times=True, merge=False, interval=1.5):
                 shared["current"] = os.path.basename(path)
             analysis, stats = analyze_flow_files(
                 resolved, workers=max(1, workers), parse_times=parse_times,
-                progress=prog, progress_every=200000)
+                progress=prog, progress_every=200000, flow_filter=flt)
             shared["packets"] = analysis.packets
-        report = to_dict(analysis, stats)
+        report = to_dict(analysis, stats, limit=(flt.limit if flt else None))
+        if flt is not None:
+            report["meta"]["filter"] = flt.summary()
+            report["meta"]["filter_basis"] = "aggregate" if merge else "packet"
     except _Canceled:
         state, extra = "canceled", {"error": "사용자가 취소했습니다"}
     except Exception as exc:  # pragma: no cover - defensive
@@ -241,11 +253,20 @@ def main(argv=None):
     p.add_argument("--merge", action="store_true",
                    help="consolidate several servers: inputs are report.json files "
                         "OR each server's portal_data directory (deduped)")
+    p.add_argument("--filter", default=None, metavar="JSON",
+                   help="exclusion spec as JSON: {exclude_src,exclude_dst,"
+                        "exclude_proto,exclude_port,limit}")
     p.add_argument("paths", nargs="+", metavar="PATH",
                    help="capture CSV(s)/globs, or (with --merge) report files/dirs")
     args = p.parse_args(argv)
+    spec = None
+    if args.filter:
+        try:
+            spec = json.loads(args.filter)
+        except ValueError:
+            p.error("--filter must be valid JSON")
     return run(args.paths, args.out, workers=max(1, args.workers),
-               parse_times=not args.no_time, merge=args.merge)
+               parse_times=not args.no_time, merge=args.merge, filter_spec=spec)
 
 
 if __name__ == "__main__":  # pragma: no cover

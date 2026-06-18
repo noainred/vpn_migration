@@ -23,6 +23,7 @@ otherwise the default tshark order above is assumed.
 import csv
 import gzip
 import io
+import ipaddress
 import itertools
 import json
 import os
@@ -198,6 +199,115 @@ def _service_port(sport: Optional[int], dport: Optional[int], proto) -> Optional
     if lo < EPHEMERAL_MIN <= hi:
         return lo
     return None
+
+
+# --- exclusion filter (re-analysis with conditions) ------------------------
+
+def _split_ip_cidr(entries):
+    """Split entries into (set of exact IP strings, list of ip_network objects)."""
+    ips, nets = set(), []
+    for e in (entries or []):
+        e = str(e).strip()
+        if not e:
+            continue
+        if "/" in e:
+            try:
+                nets.append(ipaddress.ip_network(e, strict=False))
+            except ValueError:
+                pass
+        else:
+            ips.add(e)
+    return ips, nets
+
+
+class FlowFilter:
+    """Exclusion filter for (re-)analysis: drop observations whose source or
+    destination IP/subnet, protocol, or port match. Fact-based — it only removes
+    matching packets/rows, never fabricates anything. ``limit`` caps the rows
+    emitted per table (top-N by volume). Picklable for parallel workers.
+    """
+
+    def __init__(self, exclude_src=None, exclude_dst=None, exclude_proto=None,
+                 exclude_port=None, limit=None):
+        self.src_ips, self.src_nets = _split_ip_cidr(exclude_src)
+        self.dst_ips, self.dst_nets = _split_ip_cidr(exclude_dst)
+        self.protos = set()
+        for p in (exclude_proto or []):
+            n = p if isinstance(p, int) else proto_num(str(p).strip().upper())
+            if n:
+                self.protos.add(n)
+        self.ports = set()
+        for p in (exclude_port or []):
+            try:
+                self.ports.add(int(p))
+            except (TypeError, ValueError):
+                pass
+        try:
+            self.limit = int(limit) if limit else None
+        except (TypeError, ValueError):
+            self.limit = None
+        self._active = bool(self.src_ips or self.src_nets or self.dst_ips
+                            or self.dst_nets or self.protos or self.ports)
+
+    @staticmethod
+    def from_spec(spec):
+        if not spec:
+            return None
+        f = FlowFilter(
+            exclude_src=spec.get("exclude_src"), exclude_dst=spec.get("exclude_dst"),
+            exclude_proto=spec.get("exclude_proto"), exclude_port=spec.get("exclude_port"),
+            limit=spec.get("limit"))
+        return f if (f._active or f.limit) else None
+
+    def active(self):
+        """True if any exclusion is set (a bare limit is not an exclusion)."""
+        return self._active
+
+    @staticmethod
+    def _ip_in(ip, ips, nets):
+        if ip in ips:
+            return True
+        if nets:
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                return False
+            for net in nets:
+                if addr in net:
+                    return True
+        return False
+
+    def ip_excluded(self, ip):
+        """True if ``ip`` matches either the source or destination exclude set
+        (used for aggregate/merge filtering where direction is already merged)."""
+        return (self._ip_in(ip, self.src_ips, self.src_nets)
+                or self._ip_in(ip, self.dst_ips, self.dst_nets))
+
+    def excludes_record(self, rec):
+        """True if a packet record should be dropped (per-packet, precise)."""
+        if self._ip_in(rec.src, self.src_ips, self.src_nets):
+            return True
+        if self._ip_in(rec.dst, self.dst_ips, self.dst_nets):
+            return True
+        if self.protos and rec.proto in self.protos:
+            return True
+        if self.ports and (rec.sport in self.ports or rec.dport in self.ports):
+            return True
+        return False
+
+    def excludes_service_key(self, server, proto, port):
+        return (self.ip_excluded(server) or proto in self.protos
+                or port in self.ports)
+
+    def summary(self):
+        """Normalised, JSON-serialisable echo of what was applied."""
+        return {
+            "exclude_src": sorted(self.src_ips) + [str(n) for n in self.src_nets],
+            "exclude_dst": sorted(self.dst_ips) + [str(n) for n in self.dst_nets],
+            "exclude_proto": sorted(proto_name(p) for p in self.protos),
+            "exclude_port": sorted(self.ports),
+            "limit": self.limit,
+        }
 
 
 # --- parsing ---------------------------------------------------------------
@@ -660,17 +770,18 @@ def _open_lines(path: str):
     return open(path, "rt", encoding="utf-8", errors="replace", newline="")
 
 
-def _build_units(path: str, workers: int, parse_times: bool, target_chunk: int):
+def _build_units(path: str, workers: int, parse_times: bool, target_chunk: int,
+                 flow_filter=None):
     """Split a path into picklable work units with exact, non-overlapping
     line-boundary ranges (so parallel workers never drop or double-count)."""
     if path.endswith(".gz"):
         # gzip is not seekable by byte range; process the whole file as one unit.
-        return [(path, 0, None, (), parse_times, True, False)]
+        return [(path, 0, None, (), parse_times, True, False, flow_filter)]
     size = os.path.getsize(path)
     cmap, has_header = detect_layout(path)
     cmap_items = tuple(cmap.items())
     if workers <= 1 or size < target_chunk * 2:
-        return [(path, 0, None, cmap_items, parse_times, True, has_header)]
+        return [(path, 0, None, cmap_items, parse_times, True, has_header, flow_filter)]
     nchunks = max(1, min(workers * 4, size // target_chunk))
     step = size // nchunks
     units = []
@@ -683,18 +794,21 @@ def _build_units(path: str, workers: int, parse_times: bool, target_chunk: int):
             else:
                 f.seek(start - 1)                # exact boundary test
                 skip_first = f.read(1) != b"\n"  # mid-line start -> skip partial
-            units.append((path, start, end, cmap_items, parse_times, False, skip_first))
+            units.append((path, start, end, cmap_items, parse_times, False,
+                          skip_first, flow_filter))
     return units
 
 
 def _process_unit(unit):
     """Worker: analyse one file or one byte-range chunk. Returns a partial
     :class:`FlowAnalysis` (small — bounded by network cardinality)."""
-    path, start, end, cmap_items, parse_times, whole, skip_first = unit
+    path, start, end, cmap_items, parse_times, whole, skip_first, flt = unit
     analysis = FlowAnalysis()
     if whole:
         with _open_lines(path) as fh:
             for rec in iter_flow_records(fh, parse_times=parse_times):
+                if flt is not None and flt.excludes_record(rec):
+                    continue
                 analysis.add_record(rec)
         return analysis
     cmap = dict(cmap_items)
@@ -711,6 +825,8 @@ def _process_unit(unit):
                 yield line.decode("utf-8", "replace")
 
         for rec in _emit(csv.reader(gen()), cmap, parse_times):
+            if flt is not None and flt.excludes_record(rec):
+                continue
             analysis.add_record(rec)
     return analysis
 
@@ -723,6 +839,7 @@ def analyze_flow_files(
     progress: Optional[Callable[[int, str], None]] = None,
     progress_every: int = 2_000_000,
     target_chunk: int = 64 * 1024 * 1024,
+    flow_filter=None,
 ) -> Tuple[FlowAnalysis, dict]:
     """Stream one or more capture CSVs from disk (``.csv`` or ``.gz``).
 
@@ -751,6 +868,8 @@ def analyze_flow_files(
                 continue
             try:
                 for rec in iter_flow_records(fh, parse_times=parse_times):
+                    if flow_filter is not None and flow_filter.excludes_record(rec):
+                        continue
                     analysis.add_record(rec)
                     if progress and analysis.packets % progress_every == 0:
                         progress(analysis.packets, path)
@@ -769,7 +888,8 @@ def analyze_flow_files(
 
     units = []
     for path in readable:
-        units.extend(_build_units(path, workers, parse_times, target_chunk))
+        units.extend(_build_units(path, workers, parse_times, target_chunk,
+                                  flow_filter=flow_filter))
     analysis = FlowAnalysis()
     per_path = {}
     with mp.Pool(processes=workers) as pool:
@@ -787,7 +907,8 @@ def analyze_flow_files(
 
 # --- serialisation / reports -----------------------------------------------
 
-def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None) -> dict:
+def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None,
+            limit: Optional[int] = None) -> dict:
     def svc_list(pairs):
         return [{"proto": proto_name(p), "port": port,
                  "label": service_label(p, port)} for (p, port) in sorted(
@@ -873,6 +994,7 @@ def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None) -> dict:
             "idle_windows": _idle_windows(idle),
         })
 
+    lim = (lambda rows: rows[:limit]) if (limit and limit > 0) else (lambda rows: rows)
     return {
         "mode": "flow",
         "meta": {
@@ -882,17 +1004,24 @@ def to_dict(analysis: FlowAnalysis, stats: Optional[dict] = None) -> dict:
             "services": len(analysis.services),
             "first_seen": _fmt_dt(analysis.first), "last_seen": _fmt_dt(analysis.last),
             "duration_seconds": analysis.duration_seconds(),
+            # When set, the lists below are capped to the top ``limit`` rows by
+            # volume; the counts above still reflect the full (filtered) set.
+            "limit": limit if (limit and limit > 0) else None,
+            "shown": {
+                "hosts": len(lim(hosts)), "conversations": len(lim(conversations)),
+                "services": len(lim(services)), "subnet_matrix": len(lim(subnet_matrix)),
+            },
         },
-        "hosts": hosts,
-        "conversations": conversations,
-        "services": services,
-        "subnet_matrix": subnet_matrix,
+        "hosts": lim(hosts),
+        "conversations": lim(conversations),
+        "services": lim(services),
+        "subnet_matrix": lim(subnet_matrix),
         "protocols": protocols,
         "activity": {
             "granularity": "hour-of-week",
             "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
             "observed_hours": len(global_active),
-            "hosts": activity_hosts,
+            "hosts": lim(activity_hosts),
         },
     }
 
@@ -1019,6 +1148,78 @@ def merge_reports(reports):
     for d in reports:
         base.merge(analysis_from_report(d))
     return base
+
+
+def filter_analysis(an, flt):
+    """Apply an exclusion :class:`FlowFilter` to an already-aggregated analysis
+    (the merge path, where per-packet data is gone).
+
+    Conversations/hosts/subnets whose endpoint matches an IP/subnet exclude are
+    dropped; host volumes, the subnet matrix and the meta totals are recomputed
+    exactly from the kept conversations (A->B / B->A byte splits are retained, so
+    this is precise for IP/subnet exclusion). Protocol/port exclusion is applied
+    to the services/policies list and to each conversation's service labels —
+    aggregated input cannot be split per-packet, so it does not subtract bytes
+    from conversation totals (reported as ``filter_basis='aggregate'``).
+    """
+    if flt is None or not flt.active():
+        return an
+    out = FlowAnalysis()
+    for (a, b), c in an.convs.items():
+        if flt.ip_excluded(a) or flt.ip_excluded(b):
+            continue
+        nc = dict(c)
+        nc["services"] = set(s for s in c["services"]
+                             if s[0] not in flt.protos and s[1] not in flt.ports)
+        nc["protocols"] = set(p for p in c["protocols"] if p not in flt.protos)
+        nc["ports"] = set(p for p in c["ports"] if p not in flt.ports)
+        out.convs[(a, b)] = nc
+        out.packets += c["packets"]
+        out.bytes += c["bytes"]
+        out.first = _min_dt(out.first, c["first"])
+        out.last = _max_dt(out.last, c["last"])
+        ha, hb = out._host(a), out._host(b)
+        ha["sent_bytes"] += c["ab_bytes"]; ha["sent_packets"] += c["ab_packets"]
+        ha["recv_bytes"] += c["ba_bytes"]; ha["recv_packets"] += c["ba_packets"]
+        hb["sent_bytes"] += c["ba_bytes"]; hb["sent_packets"] += c["ba_packets"]
+        hb["recv_bytes"] += c["ab_bytes"]; hb["recv_packets"] += c["ab_packets"]
+        ha["peers"].add(b); hb["peers"].add(a)
+        ha["first"] = _min_dt(ha["first"], c["first"]); ha["last"] = _max_dt(ha["last"], c["last"])
+        hb["first"] = _min_dt(hb["first"], c["first"]); hb["last"] = _max_dt(hb["last"], c["last"])
+        sa = an.hosts.get(a, {}).get("subnet", subnet_of(a))
+        sb = an.hosts.get(b, {}).get("subnet", subnet_of(b))
+        smk = tuple(sorted((sa, sb)))
+        sm = out.subnet_matrix.get(smk)
+        if sm is None:
+            sm = {"a": smk[0], "b": smk[1], "packets": 0, "bytes": 0,
+                  "services": set(), "host_pairs": set()}
+            out.subnet_matrix[smk] = sm
+        sm["packets"] += c["packets"]; sm["bytes"] += c["bytes"]
+        sm["host_pairs"].add((a, b)); sm["services"] |= nc["services"]
+    for (server, proto, port), s in an.services.items():
+        if flt.excludes_service_key(server, proto, port):
+            continue
+        clients = set(cl for cl in s["clients"] if not flt.ip_excluded(cl))
+        if not clients:
+            continue
+        ns = dict(s)
+        ns["clients"] = clients
+        out.services[(server, proto, port)] = ns
+        h = out.hosts.get(server)
+        if h is not None:
+            h["offered"].add((proto, port))
+        for cl in clients:
+            hc = out.hosts.get(cl)
+            if hc is not None:
+                hc["is_client"] = True
+    for p, v in an.proto_stats.items():
+        if p in flt.protos:
+            continue
+        out.proto_stats[p] = [v[0], v[1]]
+    for ip, act in an.host_activity.items():
+        if not flt.ip_excluded(ip):
+            out.host_activity[ip] = act
+    return out
 
 
 def load_report(path):

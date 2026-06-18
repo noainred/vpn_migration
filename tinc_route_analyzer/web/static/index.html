@@ -162,6 +162,33 @@
         <label><input type="checkbox" id="jobNoTime" /> 시간 파싱 생략(최대 처리량)</label>
         <label><input type="checkbox" id="jobMerge" /> 다중 서버 통합(--merge · 통신쌍 중복 제거)</label>
       </div>
+
+      <details class="advanced jobfilter">
+        <summary>필터 / 제외 옵션 — 조건에 맞는 데이터를 분석에서 제외하고 표시 개수 제한</summary>
+        <div class="filter-grid">
+          <label class="field"><span>제외 출발지(source) IP/서브넷 — 한 줄에 하나</span>
+            <textarea id="fltSrc" rows="2" placeholder="10.0.0.5&#10;10.93.0.0/16"></textarea></label>
+          <label class="field"><span>제외 목적지(destination) IP/서브넷 — 한 줄에 하나</span>
+            <textarea id="fltDst" rows="2" placeholder="10.0.0.5&#10;10.93.0.0/16"></textarea></label>
+        </div>
+        <div class="toggle-row">
+          <span>제외 프로토콜:</span>
+          <label><input type="checkbox" id="fltTcp" /> TCP</label>
+          <label><input type="checkbox" id="fltUdp" /> UDP</label>
+          <label><input type="checkbox" id="fltIcmp" /> ICMP</label>
+          <label>기타 <input id="fltProtoExtra" type="text" placeholder="gre, 47" style="width:120px" /></label>
+        </div>
+        <div class="toggle-row">
+          <label>제외 포트 <input id="fltPorts" type="text" placeholder="443, 22, 3306" style="width:220px" /></label>
+          <label>표시 개수 제한(top N) <input id="fltLimit" type="number" min="0" value="0" style="width:80px" /></label>
+          <span class="hint">0 = 무제한</span>
+          <button id="btnFilterSave" class="ghost">옵션 저장</button>
+        </div>
+        <p class="hint">제외 = 분석에서 빼는 조건. 원본 CSV는 <b>패킷 단위</b>로 정확히 제외, 머지(집계본)는
+          <b>통신쌍/서비스 단위</b>로 제외합니다. 옵션은 분석 시작 시 자동 저장되어 다음에 다시 불러옵니다.</p>
+        <p id="filterMsg" class="msg"></p>
+      </details>
+
       <div class="actions">
         <button id="btnJobStart" class="primary">분석 시작</button>
         <button id="btnJobCancel" class="ghost">중지</button>

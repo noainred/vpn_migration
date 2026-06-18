@@ -563,7 +563,8 @@ class JobController(object):
             "error": d.get("error"), "hasResult": has_result,
         }
 
-    def start(self, paths, workers=1, parse_times=True, merge=False):
+    def start(self, paths, workers=1, parse_times=True, merge=False,
+              filter_spec=None):
         if self.is_running():
             return False, "이미 분석 작업이 실행 중입니다"
         clean = [str(p).strip() for p in (paths or []) if str(p).strip()]
@@ -597,6 +598,8 @@ class JobController(object):
             argv.append("--no-time")
         if merge:
             argv.append("--merge")
+        if filter_spec:
+            argv += ["--filter", json.dumps(filter_spec, ensure_ascii=False)]
         argv.append("--")          # stop option parsing; paths may begin with '-'
         argv.extend(clean)
         try:
@@ -694,6 +697,90 @@ def _save_capture_cfg(cfg):
         os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
         with open(_CAPTURE_CFG_PATH, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh)
+    except OSError:
+        pass
+
+
+# --- analysis exclusion filter (re-analysis conditions; last-used saved) ----
+
+_ANALYSIS_FILTER_PATH = os.path.join(persistence.DEFAULT_DIR, "analysis_filter.json")
+_PROTO_NAME_SET = set(v.upper() for v in flowcsv.PROTO_NAMES.values())
+_EMPTY_FILTER = {"exclude_src": [], "exclude_dst": [], "exclude_proto": [],
+                 "exclude_port": [], "limit": 0}
+
+
+def _valid_proto(entry):
+    e = str(entry).strip()
+    if e.isdigit():
+        return 0 <= int(e) <= 255
+    return e.upper() in _PROTO_NAME_SET
+
+
+def _valid_port(entry):
+    try:
+        n = int(str(entry).strip())
+    except (TypeError, ValueError):
+        return False
+    return 0 <= n <= 65535
+
+
+def _clean_filter_spec(payload):
+    """Validate a filter payload -> (normalised spec, list of bad entries)."""
+    payload = payload or {}
+    spec = dict(_EMPTY_FILTER)
+    bad = []
+
+    def _strs(key):
+        return [str(x).strip() for x in (payload.get(key) or []) if str(x).strip()]
+
+    for key in ("exclude_src", "exclude_dst"):
+        vals = _strs(key)
+        spec[key] = vals
+        bad += [v for v in vals if not _valid_exclude(v)]
+    protos = _strs("exclude_proto")
+    spec["exclude_proto"] = [p.upper() if not p.isdigit() else p for p in protos]
+    bad += [p for p in protos if not _valid_proto(p)]
+    ports = []
+    for x in (payload.get("exclude_port") or []):
+        x = str(x).strip()
+        if not x:
+            continue
+        if _valid_port(x):
+            ports.append(int(x))
+        else:
+            bad.append(x)
+    spec["exclude_port"] = ports
+    try:
+        lim = int(payload.get("limit") or 0)
+        spec["limit"] = lim if lim > 0 else 0
+    except (TypeError, ValueError):
+        bad.append("limit")
+    return spec, bad
+
+
+def _filter_has_content(spec):
+    return bool(spec and (spec.get("exclude_src") or spec.get("exclude_dst")
+                          or spec.get("exclude_proto") or spec.get("exclude_port")
+                          or spec.get("limit")))
+
+
+def _load_analysis_filter():
+    try:
+        with open(_ANALYSIS_FILTER_PATH, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        if isinstance(cfg, dict):
+            spec, _bad = _clean_filter_spec(cfg)
+            return spec
+    except (OSError, ValueError):
+        pass
+    return dict(_EMPTY_FILTER)
+
+
+def _save_analysis_filter(spec):
+    try:
+        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
+        with open(_ANALYSIS_FILTER_PATH, "w", encoding="utf-8") as fh:
+            json.dump(spec, fh, ensure_ascii=False)
     except OSError:
         pass
 
@@ -803,6 +890,8 @@ class Handler(BaseHTTPRequestHandler):
                                  "data": rep,
                                  "summaryText": flowcsv.render_summary(rep),
                                  "exports": _flow_exports(rep)})
+        elif path == "/api/analysis/filter":
+            self._send_json({"ok": True, "filter": _load_analysis_filter()})
         elif path == "/api/capture/config":
             self._send_json({"ok": True, **_load_capture_cfg()})
         elif path == "/api/update/status":
@@ -856,15 +945,31 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json_body() or {}
             raw = payload.get("paths")
             paths = re.split(r"[\r\n]+", raw) if isinstance(raw, str) else list(raw or [])
+            spec, bad = _clean_filter_spec(payload.get("filter"))
+            if bad:
+                self._send_json({"ok": False, "error":
+                                 "유효하지 않은 필터 항목: " + ", ".join(bad)}, 400)
+                return
+            _save_analysis_filter(spec)          # remember last-used options
             ok, err = _JOB.start(
                 paths, workers=payload.get("workers", 1),
                 parse_times=not bool(payload.get("noTime")),
-                merge=bool(payload.get("merge")))
+                merge=bool(payload.get("merge")),
+                filter_spec=spec if _filter_has_content(spec) else None)
             self._send_json({"ok": ok, "error": err, **_JOB.status()},
                             200 if ok else 409)
         elif path == "/api/job/cancel":
             _JOB.cancel()
             self._send_json({"ok": True, **_JOB.status()})
+        elif path == "/api/analysis/filter":
+            payload = self._read_json_body() or {}
+            spec, bad = _clean_filter_spec(payload)
+            if bad:
+                self._send_json({"ok": False, "error":
+                                 "유효하지 않은 항목: " + ", ".join(bad)}, 400)
+                return
+            _save_analysis_filter(spec)
+            self._send_json({"ok": True, "filter": spec})
         elif path == "/api/persist/config":
             payload = self._read_json_body()
             if payload is None:

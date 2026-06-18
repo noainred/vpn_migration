@@ -1,1 +1,1 @@
-{"latest":"1.6.0","versions":[{"version":"1.6.0","tar_gz":"tinc_route_analyzer-1.6.0.tar.gz","zip":"tinc_route_analyzer-1.6.0.zip","size_bytes":79079,"zip_size_bytes":86778},{"version":"1.4.0","tar_gz":"tinc_route_analyzer-1.4.0.tar.gz","size_bytes":71043}]}
+{"latest": "1.7.0", "versions": [{"version": "1.7.0", "tar_gz": "tinc_route_analyzer-1.7.0.tar.gz", "zip": "tinc_route_analyzer-1.7.0.zip", "size_bytes": 83701, "zip_size_bytes": 91370}, {"version": "1.4.0", "tar_gz": "tinc_route_analyzer-1.4.0.tar.gz", "size_bytes": 71043}]}
