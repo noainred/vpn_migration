@@ -69,5 +69,11 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
 ## Conventions
 
 - Standard library only (no third-party runtime deps); must run air-gapped.
+- **Target Python 3.6+** (enterprise RHEL boxes ship 3.6). Do NOT use 3.7+ only
+  features: no `from __future__ import annotations`, no `dataclasses`, no
+  `datetime.fromisoformat`, no `re.Pattern`, no `subprocess` `text=`/
+  `capture_output=`, no PEP 585 generics in evaluated annotations (use
+  `typing.List/Dict/Set` or `# type:` comments). `ThreadingHTTPServer` is
+  defined locally (ThreadingMixIn + HTTPServer).
 - A->B and B->A are the **same conversation** (dedup), always with a
   per-direction breakdown kept alongside the merged total.

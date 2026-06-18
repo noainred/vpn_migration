@@ -16,15 +16,31 @@ stable across tinc versions and operating systems, which is what makes
 cross-OS analysis possible.
 """
 
-from __future__ import annotations
-
 import re
 from datetime import datetime
-from typing import Iterable, Iterator, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 from .models import EventType, LogEvent
 
 DEFAULT_YEAR = datetime.now().year
+
+# Parse "YYYY-MM-DDtHH:MM:SS[.frac][tz]" into a naive datetime (3.6 has no
+# datetime.fromisoformat). The timezone is dropped (wall-clock comparison).
+_ISO_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?$")
+
+
+def _parse_iso(s):
+    m = _ISO_RE.match(s.strip())
+    if not m:
+        return None
+    frac = (m.group(7) or "0")[:6].ljust(6, "0")
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)), int(m.group(6)), int(frac))
+    except ValueError:
+        return None
 
 # --- prefix handling -------------------------------------------------------
 
@@ -69,16 +85,8 @@ def _parse_timestamp(ts: Optional[str], year: int) -> Optional[datetime]:
             return None
         return datetime(year, mon, int(m.group(2)),
                         int(m.group(3)), int(m.group(4)), int(m.group(5)))
-    # ISO 8601 — normalise a trailing "Z" and a "+0900"/"+09:00" offset.
-    iso = ts.replace("Z", "+00:00").replace(" ", "T", 1)
-    m = re.match(r"^(.*[+-]\d{2})(\d{2})$", iso)
-    if m:  # "+0900" -> "+09:00"
-        iso = f"{m.group(1)}:{m.group(2)}"
-    try:
-        dt = datetime.fromisoformat(iso)
-    except ValueError:
-        return None
-    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    # ISO 8601 (any "+0900"/"+09:00"/"Z" offset is parsed then dropped).
+    return _parse_iso(ts)
 
 
 def split_prefix(raw: str) -> Tuple[Optional[str], Optional[str], str]:
@@ -102,7 +110,7 @@ def split_prefix(raw: str) -> Tuple[Optional[str], Optional[str], str]:
 
 _ADDR = r"\((?P<addr>[^)]*)\)"  # "(203.0.113.10 port 655)"
 
-_PATTERNS: list[Tuple[EventType, re.Pattern]] = [
+_PATTERNS = [   # type: List[Tuple[EventType, object]]
     (EventType.PACKET_RECEIVED, re.compile(
         rf"Received packet of (?P<size>\d+) bytes from (?P<peer>\S+) {_ADDR}")),
     (EventType.PACKET_SENT, re.compile(

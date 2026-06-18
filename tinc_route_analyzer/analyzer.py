@@ -1,11 +1,9 @@
 """Aggregation of parsed log events into a traffic / topology model."""
 
-from __future__ import annotations
-
 import os
 from collections import Counter
 from datetime import datetime
-from typing import Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .models import EventType, FlowStats, LogEvent, NodeInfo
 from .parser import DEFAULT_YEAR, iter_events
@@ -30,18 +28,18 @@ def _max_dt(a: Optional[datetime], b: Optional[datetime]) -> Optional[datetime]:
 class Analysis:
     """Accumulates :class:`LogEvent` objects into nodes, flows and routes."""
 
-    def __init__(self) -> None:
-        self.nodes: dict[str, NodeInfo] = {}
-        self.flows: dict[Tuple[str, str], FlowStats] = {}
+    def __init__(self):
+        self.nodes = {}        # type: Dict[str, NodeInfo]
+        self.flows = {}        # type: Dict[Tuple[str, str], FlowStats]
         # relay node -> Counter of (src, dst) pairs it forwarded
-        self.relays: dict[str, Counter] = {}
+        self.relays = {}       # type: Dict[str, Counter]
         # subnet -> owning node
-        self.subnets: dict[str, str] = {}
+        self.subnets = {}      # type: Dict[str, str]
         # direct meta/tunnel links (unordered node pairs)
-        self.direct_links: set[frozenset] = set()
+        self.direct_links = set()   # type: Set[frozenset]
         self.total_events = 0
         self.events_without_local = 0
-        self.route_errors: list[LogEvent] = []
+        self.route_errors = []      # type: List[LogEvent]
         self.first_seen: Optional[datetime] = None
         self.last_seen: Optional[datetime] = None
 
@@ -184,13 +182,13 @@ class Analysis:
 
     # -- derived views ------------------------------------------------------
 
-    def communication_pairs(self) -> list[dict]:
+    def communication_pairs(self) -> List[dict]:
         """Undirected node pairs that exchanged data, with merged volume.
 
         This is the key artefact for migration: each pair becomes one
         firewall / connectivity policy.
         """
-        pairs: dict[frozenset, dict] = {}
+        pairs = {}  # type: Dict[frozenset, dict]
         for (src, dst), flow in self.flows.items():
             key = frozenset((src, dst))
             agg = pairs.get(key)
@@ -220,18 +218,18 @@ class Analysis:
         return sorted(pairs.values(), key=lambda p: (-p["bytes"], -p["packets"],
                                                      p["a"], p["b"]))
 
-    def routed_flows(self) -> list[FlowStats]:
+    def routed_flows(self) -> List[FlowStats]:
         """Flows that travelled through at least one relay node."""
         return sorted(
             (f for f in self.flows.values() if f.relayed),
             key=lambda f: (-f.packets, f.src, f.dst),
         )
 
-    def sorted_flows(self) -> list[FlowStats]:
+    def sorted_flows(self) -> List[FlowStats]:
         return sorted(self.flows.values(),
                       key=lambda f: (-f.bytes, -f.packets, f.src, f.dst))
 
-    def sorted_nodes(self) -> list[NodeInfo]:
+    def sorted_nodes(self) -> List[NodeInfo]:
         return sorted(self.nodes.values(), key=lambda n: n.name)
 
 

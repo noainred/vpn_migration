@@ -10,8 +10,6 @@ Run with::
     python3 -m tinc_route_analyzer.web --port 8080
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -20,9 +18,16 @@ import shutil
 import subprocess
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """http.server.ThreadingHTTPServer is 3.7+; define it for Python 3.6."""
+
+    daemon_threads = True
 
 from .. import flowcsv, reporter
 from ..analyzer import analyze_texts
@@ -195,7 +200,8 @@ def _list_interfaces() -> list:
     if not shutil.which("tshark"):
         return []
     try:
-        out = subprocess.run(["tshark", "-D"], capture_output=True, text=True, timeout=5)
+        out = subprocess.run(["tshark", "-D"], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
     except Exception:
         return []
     ifaces = []
@@ -251,7 +257,7 @@ class LiveCapture:
         def factory():
             self.proc = subprocess.Popen(
                 _tshark_argv(iface), stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                stderr=subprocess.DEVNULL, universal_newlines=True, bufsize=1)
             return self.proc.stdout
         return self._start(factory, iface)
 

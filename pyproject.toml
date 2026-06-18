@@ -7,7 +7,7 @@ name = "tinc-route-analyzer"
 version = "1.0.0"
 description = "Analyse tinc VPN logs to map node-to-node traffic and routes for migration to NSX VPN"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.6"
 license = { text = "MIT" }
 keywords = ["tinc", "vpn", "nsx", "log-analysis", "network", "migration"]
 

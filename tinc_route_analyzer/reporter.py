@@ -6,13 +6,11 @@ directed flows, routing/relay paths, subnet ownership, CSV, JSON and Graphviz
 DOT.
 """
 
-from __future__ import annotations
-
 import csv
 import io
 import json
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from .analyzer import Analysis
 
@@ -31,7 +29,7 @@ def _fmt_dt(dt: Optional[datetime]) -> str:
     return dt.isoformat() if dt else "-"
 
 
-def _table(headers: list[str], rows: list[list[str]]) -> str:
+def _table(headers: List[str], rows: List[List[str]]) -> str:
     if not rows:
         return "  (none)\n"
     widths = [len(h) for h in headers]
@@ -172,7 +170,7 @@ def render_summary(analysis: Analysis, stats: Optional[dict] = None,
 
 # --- derived policy view (NSX migration) -----------------------------------
 
-def policies(analysis: Analysis) -> list[dict]:
+def policies(analysis: Analysis) -> List[dict]:
     """Turn observed communication pairs into proposed allow-policies.
 
     Each policy carries both endpoints' owned subnets and physical addresses,

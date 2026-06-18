@@ -1,7 +1,5 @@
 """Command line interface for the tinc route analyzer."""
 
-from __future__ import annotations
-
 import argparse
 import sys
 from typing import List, Optional, Tuple

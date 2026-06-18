@@ -20,8 +20,6 @@ The column order is taken from a header row when present (``-E header=y``);
 otherwise the default tshark order above is assumed.
 """
 
-from __future__ import annotations
-
 import csv
 import gzip
 import io
