@@ -223,6 +223,30 @@ class TestPersistenceAndDashboard(unittest.TestCase):
             self.assertEqual(len([f for f in os.listdir(tmp) if f.startswith("flow_min")]), 2)
 
 
+class TestSnapshotCompressionAndPreview(unittest.TestCase):
+    def test_compressed_write_list_and_head(self):
+        import tempfile
+        from tinc_route_analyzer.web import persistence
+        with tempfile.TemporaryDirectory() as tmp:
+            data = {"meta": {"packets": 3}, "conversations": [{"a": "10.0.0.1"}], "hosts": []}
+            p = persistence.Persistence(lambda: data)
+            p.set_config({"save_dir": tmp, "minute": True, "compress": True})
+            p._tick()
+            files = persistence.list_files(tmp)
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0]["name"].endswith(".json.gz"))
+            lines = persistence.head_file(tmp, files[0]["name"], 100)
+            self.assertTrue(lines and lines[0].startswith("{"))
+
+    def test_head_file_rejects_traversal(self):
+        import tempfile
+        from tinc_route_analyzer.web import persistence
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(persistence.head_file(tmp, "../../etc/passwd"))
+            self.assertIsNone(persistence.head_file(tmp, "notes.txt"))
+            self.assertIsNone(persistence.head_file(tmp, "flow_min_x.json"))  # absent
+
+
 class TestMultiReportMergeAndLast(unittest.TestCase):
     def test_analyze_payload_merges_multiple_reports(self):
         from tinc_route_analyzer import flowcsv

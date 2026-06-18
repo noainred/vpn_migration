@@ -451,6 +451,20 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path == "/api/persist/config":
             self._send_json({"ok": True, "config": _PERSIST.get_config()})
+        elif path == "/api/persist/files":
+            save_dir = _PERSIST.get_config()["save_dir"]
+            self._send_json({"ok": True, "dir": save_dir,
+                             "files": persistence.list_files(save_dir)})
+        elif path == "/api/persist/file":
+            q = parse_qs(parsed.query)
+            name = (q.get("name") or [""])[0]
+            n = int((q.get("lines") or ["100"])[0] or 100)
+            save_dir = _PERSIST.get_config()["save_dir"]
+            lines = persistence.head_file(save_dir, name, max(1, min(2000, n)))
+            if lines is None:
+                self._send_json({"ok": False, "error": "파일을 찾을 수 없습니다"}, 404)
+            else:
+                self._send_json({"ok": True, "name": name, "lines": lines})
         elif path == "/api/last":
             self._send_json({"ok": True, "data": _LAST_FLOW["data"]})
         else:

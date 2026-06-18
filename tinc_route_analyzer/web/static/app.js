@@ -93,11 +93,18 @@ async function startLive() {
     const json = await res.json();
     if (!json.ok) { setLiveStatus(json.error || "시작 실패", "err"); return; }
     setLiveStatus(`'${iface}' 캡처 중…`, "ok");
+    setCapturing(true, `🔴 '${iface}' 캡처 시작…`);   // hide controls, show stop bar
     els.results.classList.remove("hidden");
+    window.scrollTo({ top: 0, behavior: "smooth" });   // bring results to the top
     stopLivePolling();
     await pollLive();
     state.liveTimer = setInterval(pollLive, 2000);
   } catch (e) { setLiveStatus("요청 실패: " + e, "err"); }
+}
+function setCapturing(on, text) {
+  document.body.classList.toggle("capturing", on);
+  $("#liveBar").classList.toggle("hidden", !on);
+  if (text != null) $("#liveBarText").textContent = text;
 }
 async function pollLive() {
   try {
@@ -106,19 +113,22 @@ async function pollLive() {
     state.result = json;
     renderFlow(json);
     setupExports("live", json);
-    setLiveStatus(`'${json.iface || "?"}' 캡처 중 — ${json.elapsed}s · ${Math.round(json.pps).toLocaleString()} pkt/s · 패킷 ${num(json.data.meta.packets)}`,
-      json.running ? "ok" : "");
-    if (!json.running && json.error) { setLiveStatus("캡처 종료: " + json.error, "err"); stopLivePolling(); }
+    const txt = `🔴 ${json.iface || "?"} 캡처 중 — ${json.elapsed}s · ${Math.round(json.pps).toLocaleString()} pkt/s · 패킷 ${num(json.data.meta.packets)}`;
+    setLiveStatus(txt, json.running ? "ok" : "");
+    if (json.running) setCapturing(true, txt);
+    if (!json.running) { setCapturing(false); if (json.error) { setLiveStatus("캡처 종료: " + json.error, "err"); stopLivePolling(); } }
   } catch (e) { setLiveStatus("폴링 실패: " + e, "err"); stopLivePolling(); }
 }
 async function stopLive() {
   stopLivePolling();
+  setCapturing(false);
   try { await fetch("/api/live/stop", { method: "POST" }); } catch (e) { /* ignore */ }
   setLiveStatus("캡처를 중지했습니다.");
 }
 
 async function analyze() {
   stopLivePolling();
+  setCapturing(false);
   if (!state.files.length) { setMsg("파일을 먼저 추가하세요.", "err"); return; }
   setMsg("분석 중…");
   const payload = {
@@ -156,6 +166,7 @@ async function loadSample() {
 }
 function clearAll() {
   stopLivePolling();
+  setCapturing(false);
   state.files = []; state.result = null;
   els.subnetDump.value = ""; els.hostMap.value = "";
   renderFileList(); els.results.classList.add("hidden"); setMsg("");
@@ -507,12 +518,14 @@ async function loadPersistConfig() {
     $("#saveDir").value = c.save_dir || "";
     $("#persMinute").checked = !!c.minute; $("#persHour").checked = !!c.hour;
     $("#persDay").checked = !!c.day; $("#persRetention").value = c.retention || 0;
+    $("#persCompress").checked = !!c.compress;
   } catch (e) { /* ignore */ }
 }
 async function applyPersist() {
   const body = { save_dir: $("#saveDir").value, minute: $("#persMinute").checked,
     hour: $("#persHour").checked, day: $("#persDay").checked,
-    retention: Number($("#persRetention").value) || 0 };
+    retention: Number($("#persRetention").value) || 0,
+    compress: $("#persCompress").checked };
   const el = $("#persistMsg");
   try {
     const j = await (await fetch("/api/persist/config", { method: "POST",
@@ -539,12 +552,36 @@ async function pollSys() {
     card("저장 파일", saved.count, fmtBytes(saved.bytes)),
     card("라이브 캡처", cap.running ? "ON" : "off", cap.running ? num(cap.packets) + "p" : ""),
   ].join("");
-  const rows = (saved.recent || []).map((f) => [td(`<code>${esc(f.name)}</code>`), tdn(fmtBytes(f.bytes)), td(esc(f.mtime))]);
   const last = j.persist && j.persist.last || {};
+  state.saveDir = saved.dir || "";
+  state.lastSaved = `마지막 저장 — 분: ${esc(last.minute || "-")} · 시: ${esc(last.hour || "-")} · 일: ${esc(last.day || "-")}`;
+  loadSavedFiles();
+}
+
+// ---- saved file browser (click filename -> first 100 lines, save verify) ---
+async function loadSavedFiles() {
+  let files = [];
+  try { const j = await (await fetch("/api/persist/files")).json(); if (j.ok) files = j.files; } catch (e) { return; }
+  const rows = files.map((f) =>
+    `<tr><td><span class="filename-link" data-f="${esc(f.name)}">${esc(f.name)}</span></td>`
+    + `<td class="num">${fmtBytes(f.bytes)}</td><td>${esc(f.mtime)}</td></tr>`).join("");
   $("#savedFiles").innerHTML =
-    `<div class="section-title" style="margin-top:14px">최근 저장 스냅샷 <span class="muted">(${esc(saved.dir || "")})</span></div>` +
-    `<div class="muted" style="font-size:12px;margin-bottom:6px">마지막 저장 — 분: ${esc(last.minute || "-")} · 시: ${esc(last.hour || "-")} · 일: ${esc(last.day || "-")}</div>` +
-    table(["파일", "용량", "시각"], rows);
+    `<div class="section-title" style="margin-top:14px">저장 파일 <span class="muted">(${esc(state.saveDir || "")}) · ${files.length}개 · 파일명 클릭 = 첫 100줄 확인</span></div>`
+    + `<div class="muted" style="font-size:12px;margin-bottom:6px">${state.lastSaved || ""}</div>`
+    + (files.length ? `<table class="grid"><thead><tr><th>파일</th><th>용량</th><th>시각</th></tr></thead><tbody>${rows}</tbody></table>`
+                    : `<p class="muted">아직 저장된 스냅샷이 없습니다(설정에서 분/시/일 저장을 켜고 라이브 캡처를 실행하세요).</p>`);
+  $("#savedFiles").querySelectorAll(".filename-link").forEach((el) =>
+    el.addEventListener("click", () => previewFile(el.dataset.f)));
+}
+async function previewFile(name) {
+  const pre = $("#filePreview");
+  pre.classList.remove("hidden");
+  pre.textContent = name + " 불러오는 중…";
+  try {
+    const j = await (await fetch("/api/persist/file?name=" + encodeURIComponent(name) + "&lines=100")).json();
+    if (!j.ok) { pre.textContent = "읽기 실패: " + (j.error || ""); return; }
+    pre.textContent = "// " + name + "  (첫 " + j.lines.length + "줄)\n" + j.lines.join("\n");
+  } catch (e) { pre.textContent = "요청 실패: " + e; }
 }
 
 // ---- exports --------------------------------------------------------------
@@ -597,6 +634,7 @@ function init() {
   $("#btnClear").addEventListener("click", clearAll);
   $("#btnLiveStart").addEventListener("click", startLive);
   $("#btnLiveStop").addEventListener("click", stopLive);
+  $("#btnLiveStopBar").addEventListener("click", stopLive);
   $("#btnFullTopo").addEventListener("click", openFullTopo);
   $("#btnPersistApply").addEventListener("click", applyPersist);
   bindTabs();

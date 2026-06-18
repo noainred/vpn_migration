@@ -7,6 +7,12 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div id="liveBar" class="livebar hidden">
+    <span class="pulse"></span>
+    <span id="liveBarText">캡처 중…</span>
+    <button id="btnLiveStopBar">■ 캡처 중지</button>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="logo">⇄</span>
@@ -121,12 +127,14 @@
           <label><input type="checkbox" id="persHour" /> 시간</label>
           <label><input type="checkbox" id="persDay" /> 일</label>
           <label>보관 개수 <input id="persRetention" type="number" min="0" value="0" style="width:70px" /></label>
+          <label><input type="checkbox" id="persCompress" /> 압축 저장(gzip)</label>
           <button id="btnPersistApply" class="primary" style="flex:0 0 auto">적용</button>
         </div>
         <p id="persistMsg" class="msg"></p>
       </details>
       <div class="overview" id="sysCards"></div>
       <div id="savedFiles"></div>
+      <pre id="filePreview" class="filepreview hidden"></pre>
     </section>
   </main>
 

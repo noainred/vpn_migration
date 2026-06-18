@@ -1266,7 +1266,8 @@ def main(argv=None) -> int:
         reports = []
         for pth in paths:
             try:
-                with open(pth, "r", encoding="utf-8") as fh:
+                opener = gzip.open if pth.endswith(".gz") else open
+                with opener(pth, "rt", encoding="utf-8") as fh:
                     reports.append(json.load(fh))
             except (OSError, ValueError) as exc:
                 print("warning: skipping %s: %s" % (pth, exc), file=sys.stderr)

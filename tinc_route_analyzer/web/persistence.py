@@ -12,6 +12,7 @@ CPU/RSS/disk/file-size so memory growth or a filling disk is visible early.
 """
 
 import json
+import gzip
 import os
 import shutil
 import threading
@@ -66,6 +67,41 @@ def _peak_rss_bytes():
     return 0
 
 
+def _is_snapshot(name):
+    return name.endswith(".json") or name.endswith(".json.gz")
+
+
+def list_files(save_dir):
+    """All snapshot files in ``save_dir`` (newest first)."""
+    _total, files = _saved_files(save_dir)
+    return files
+
+
+def head_file(save_dir, name, n=100):
+    """Return the first ``n`` lines of a saved snapshot (for save verification).
+
+    ``name`` must be a bare snapshot filename inside ``save_dir`` (no path
+    traversal). Transparently decompresses ``.gz``.
+    """
+    base = os.path.basename(name or "")
+    if base != name or not base.startswith("flow_") or not _is_snapshot(base):
+        return None
+    path = os.path.join(save_dir, base)
+    if not os.path.isfile(path):
+        return None
+    opener = gzip.open if base.endswith(".gz") else open
+    lines = []
+    try:
+        with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= n:
+                    break
+                lines.append(line.rstrip("\n")[:1000])  # cap very long lines
+    except OSError:
+        return None
+    return lines
+
+
 def _saved_files(save_dir):
     total = 0
     files = []
@@ -74,7 +110,7 @@ def _saved_files(save_dir):
     except OSError:
         return 0, []
     for name in names:
-        if not name.startswith("flow_") or not name.endswith(".json"):
+        if not name.startswith("flow_") or not _is_snapshot(name):
             continue
         fp = os.path.join(save_dir, name)
         try:
@@ -118,7 +154,7 @@ class Persistence(object):
         self.snapshot_fn = snapshot_fn
         self._lock = threading.Lock()
         self.config = {"save_dir": DEFAULT_DIR, "minute": False, "hour": False,
-                       "day": False, "retention": 0}
+                       "day": False, "retention": 0, "compress": False}
         self.last = {"minute": None, "hour": None, "day": None}
         self.last_paths = {"minute": None, "hour": None, "day": None}
         self._stop = False
@@ -147,6 +183,7 @@ class Persistence(object):
                 "hour": bool(cfg.get("hour")),
                 "day": bool(cfg.get("day")),
                 "retention": max(0, int(cfg.get("retention") or 0)),
+                "compress": bool(cfg.get("compress")),
             }
         self._save_config()
         return self.get_config()
@@ -189,18 +226,25 @@ class Persistence(object):
                 data = self.snapshot_fn()
                 if not data or data.get("meta", {}).get("packets", 0) <= 0:
                     return  # nothing collected yet; try again next tick
-            path = self._write(cfg["save_dir"], gran, key, data)
+            path = self._write(cfg["save_dir"], gran, key, data, cfg.get("compress"))
             with self._lock:
                 self.last[gran] = key
                 self.last_paths[gran] = path
             self._retain(cfg["save_dir"], gran, cfg["retention"])
 
-    def _write(self, save_dir, gran, key, data):
+    def _write(self, save_dir, gran, key, data, compress=False):
         os.makedirs(save_dir, exist_ok=True)
-        path = os.path.join(save_dir, "%s_%s.json" % (_PREFIX[gran], key))
+        ext = ".json.gz" if compress else ".json"
+        path = os.path.join(save_dir, "%s_%s%s" % (_PREFIX[gran], key, ext))
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False)
+        # indent=2 so files stay human-readable for the "first 100 lines" preview;
+        # gzip handles the size when 압축 저장 is on.
+        if compress:
+            with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+        else:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
         os.replace(tmp, path)   # atomic
         return path
 
@@ -209,7 +253,7 @@ class Persistence(object):
             return
         try:
             names = sorted(n for n in os.listdir(save_dir)
-                           if n.startswith(_PREFIX[gran] + "_") and n.endswith(".json"))
+                           if n.startswith(_PREFIX[gran] + "_") and _is_snapshot(n))
         except OSError:
             return
         for name in names[:-keep]:
