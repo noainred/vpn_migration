@@ -179,8 +179,31 @@ function card(k, v, sub) {
 }
 function table(headers, rows) {
   if (!rows.length) return `<p class="muted">데이터가 없습니다.</p>`;
-  return `<table class="grid"><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join("")
+  return `<table class="grid"><thead><tr>${headers.map((h, i) => `<th class="sortable" data-i="${i}">${esc(h)}<span class="sort-ind"></span></th>`).join("")
     }</tr></thead><tbody>${rows.map((r) => `<tr>${r.join("")}</tr>`).join("")}</tbody></table>`;
+}
+function parseSortVal(t) {
+  t = (t || "").trim();
+  const m = t.match(/^([\d.,]+)\s*(B|KB|MB|GB|TB)$/i);
+  if (m) { const mul = { b: 1, kb: 1024, mb: 1048576, gb: 1073741824, tb: 1099511627776 }[m[2].toLowerCase()];
+    return parseFloat(m[1].replace(/,/g, "")) * mul; }
+  const num = t.replace(/,/g, "");
+  if (/^-?\d+(\.\d+)?$/.test(num)) return parseFloat(num);
+  return null;   // not numeric -> string compare
+}
+function sortByColumn(th) {
+  const tbl = th.closest("table"); const tbody = tbl && tbl.tBodies[0]; if (!tbody) return;
+  const i = +th.dataset.i;
+  const dir = th.getAttribute("data-dir") === "asc" ? "desc" : "asc";
+  tbl.querySelectorAll("th.sortable").forEach((h) => { h.removeAttribute("data-dir"); const s = h.querySelector(".sort-ind"); if (s) s.textContent = ""; });
+  th.setAttribute("data-dir", dir);
+  const ind = th.querySelector(".sort-ind"); if (ind) ind.textContent = dir === "asc" ? " ▲" : " ▼";
+  Array.from(tbody.rows).sort((ra, rb) => {
+    const ta = ra.cells[i] ? ra.cells[i].textContent : "", tb = rb.cells[i] ? rb.cells[i].textContent : "";
+    const va = parseSortVal(ta), vb = parseSortVal(tb);
+    const c = (va !== null && vb !== null) ? va - vb : String(ta).localeCompare(String(tb), undefined, { numeric: true });
+    return dir === "asc" ? c : -c;
+  }).forEach((r) => tbody.appendChild(r));
 }
 const td = (v) => `<td>${v == null ? "" : v}</td>`;
 const tdn = (v) => `<td class="num">${v == null ? "" : v}</td>`;
@@ -638,6 +661,10 @@ function init() {
   $("#btnFullTopo").addEventListener("click", openFullTopo);
   $("#btnPersistApply").addEventListener("click", applyPersist);
   bindTabs();
+  document.addEventListener("click", (e) => {
+    const th = e.target.closest && e.target.closest("th.sortable");
+    if (th) sortByColumn(th);
+  });
   loadPersistConfig();
   pollSys();
   setInterval(pollSys, 3000);

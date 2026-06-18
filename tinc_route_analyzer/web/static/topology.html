@@ -30,6 +30,7 @@
     background: rgba(255,255,255,.85); padding: 6px 10px; border-radius: 8px; }
   #empty { position: fixed; top: 50%; left: 0; right: 0; text-align: center; color: var(--muted); }
 </style>
+<style id="zoomStyle"></style>
 </head>
 <body>
   <div id="bar">
@@ -51,8 +52,22 @@ const gEdges = document.getElementById("edges"), gNodes = document.getElementByI
 const NS = "http://www.w3.org/2000/svg";
 let nodes = [], edges = [], view = { x: 0, y: 0, k: 1 }, W = 0, H = 0, alpha = 1, raf = null;
 
+const zoomStyle = document.getElementById("zoomStyle");
 function svgEl(t, attrs) { const e = document.createElementNS(NS, t); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
-function applyView() { scene.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`); }
+function updateZoom() {
+  // Counter-scale labels so they stay a constant readable size at any zoom.
+  const k = view.k || 1;
+  const showAll = k >= 0.55;     // when zoomed in, show every label
+  const showSub = k >= 0.95;
+  zoomStyle.textContent =
+    ".node text{font-size:" + (12 / k).toFixed(2) + "px;}" +
+    ".node text.sub{font-size:" + (9 / k).toFixed(2) + "px;" + (showSub ? "" : "display:none;") + "}" +
+    (showAll ? "" : ".node:not(.big) text{display:none;}");  // zoomed out: keep only hub labels
+}
+function applyView() {
+  scene.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+  updateZoom();
+}
 
 async function load() {
   let g = null;
@@ -64,8 +79,8 @@ async function load() {
   const maxW = Math.max(1, ...g.nodes.map((n) => n.weight || 0));
   nodes = g.nodes.map((n, i) => {
     idx[n.id] = i;
-    return { ...n, r: 7 + 20 * Math.sqrt((n.weight || 0) / maxW),
-      x: Math.cos(i) * 250 + (Math.random() - .5) * 60, y: Math.sin(i) * 250 + (Math.random() - .5) * 60,
+    return { ...n, r: 8 + 24 * Math.sqrt((n.weight || 0) / maxW),
+      x: Math.cos(i) * 160 + (Math.random() - .5) * 40, y: Math.sin(i) * 160 + (Math.random() - .5) * 40,
       vx: 0, vy: 0, fixed: false };
   });
   edges = g.edges.map((e) => ({ s: idx[e.a], t: idx[e.b], kind: e.kind, weight: e.weight || 0 }))
@@ -79,12 +94,13 @@ function build() {
   const maxE = Math.max(1, ...edges.map((e) => e.weight));
   edges.forEach((e) => {
     e.el = svgEl("line", { class: "edge" + (e.kind === "relay" ? " relay" : ""),
-      "stroke-width": (1 + 3 * Math.sqrt(e.weight / maxE)).toFixed(2) });
+      "vector-effect": "non-scaling-stroke",
+      "stroke-width": (1 + 2.5 * Math.sqrt(e.weight / maxE)).toFixed(2) });
     gEdges.appendChild(e.el);
   });
   nodes.forEach((n) => {
-    const g = svgEl("g", { class: "node " + (n.kind || "primary") });
-    g.appendChild(svgEl("circle", { r: n.r.toFixed(1) }));
+    const g = svgEl("g", { class: "node " + (n.kind || "primary") + (n.r >= 16 ? " big" : "") });
+    g.appendChild(svgEl("circle", { r: n.r.toFixed(1), "vector-effect": "non-scaling-stroke" }));
     const t = svgEl("text", { "text-anchor": "middle", y: 4 }); t.textContent = n.label; g.appendChild(t);
     if (n.sub) { const s = svgEl("text", { class: "sub", "text-anchor": "middle", y: (n.r + 11).toFixed(1) }); s.textContent = n.sub; g.appendChild(s); }
     n.el = g; gNodes.appendChild(g);
@@ -96,7 +112,7 @@ function build() {
 function restart() { alpha = 1; if (!raf) raf = requestAnimationFrame(tick); }
 function tick() {
   const n = nodes.length;
-  const kRep = 9000, kSpring = 0.03, rest = Math.min(180, 60 + 900 / Math.sqrt(n + 1)), cx = 0, cy = 0;
+  const kRep = 3800, kSpring = 0.035, rest = Math.min(95, 42 + 360 / Math.sqrt(n + 1)), cx = 0, cy = 0;
   for (let i = 0; i < n; i++) {
     const a = nodes[i];
     for (let j = i + 1; j < n; j++) {
@@ -108,7 +124,7 @@ function tick() {
       const fx = dx * f, fy = dy * f;
       a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
     }
-    a.vx += (cx - a.x) * 0.002; a.vy += (cy - a.y) * 0.002;  // centering
+    a.vx += (cx - a.x) * 0.008; a.vy += (cy - a.y) * 0.008;  // centering (compact)
   }
   edges.forEach((e) => {
     const a = nodes[e.s], b = nodes[e.t];
@@ -146,7 +162,7 @@ function fit() {
   nodes.forEach((n) => { minX = Math.min(minX, n.x - n.r); minY = Math.min(minY, n.y - n.r);
     maxX = Math.max(maxX, n.x + n.r); maxY = Math.max(maxY, n.y + n.r); });
   const w = maxX - minX || 1, h = maxY - minY || 1;
-  const k = Math.max(0.1, Math.min(2, 0.9 * Math.min(W / w, H / h)));
+  const k = Math.max(0.45, Math.min(2.2, 0.9 * Math.min(W / w, H / h)));
   view.k = k; view.x = W / 2 - (minX + w / 2) * k; view.y = H / 2 - (minY + h / 2) * k; applyView();
 }
 SVG.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY - 46, e.deltaY < 0 ? 1.1 : 1 / 1.1); }, { passive: false });
