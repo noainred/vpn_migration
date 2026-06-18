@@ -35,9 +35,23 @@ body {
 }
 .topbar h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .topbar .sub { margin: 2px 0 0; font-size: 13px; opacity: .9; }
-.appver { margin-left: auto; align-self: center; font-size: 12px; color: #fff;
+.topbtn { margin-left: auto; align-self: center; background: rgba(255,255,255,.16); color: #fff;
+  border: none; border-radius: 8px; padding: 7px 13px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.topbtn:hover { background: rgba(255,255,255,.28); }
+.appver { align-self: center; font-size: 12px; color: #fff;
   background: rgba(255,255,255,.16); padding: 5px 11px; border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+
+/* settings panel */
+#settings { order: 0; }
+.settings-head { display: flex; align-items: center; justify-content: space-between; }
+.settings-head h2 { margin: 0; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+.settings-card { border: 1px solid var(--line); border-radius: 11px; padding: 14px; background: #fafbff; }
+.settings-card h3 { margin: 0 0 10px; font-size: 14px; }
+.settings-card textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
+.chkline { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 8px; }
 
 main {
   max-width: 1280px; margin: 22px auto; padding: 0 20px;

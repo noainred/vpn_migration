@@ -20,11 +20,69 @@
         <h1>tinc → NSX VPN 마이그레이션 포탈</h1>
         <p class="sub">tinc 로그를 업로드하면 노드 간 트래픽 · 라우팅 경로 · 정책 후보를 분석합니다</p>
       </div>
+      <button class="topbtn" id="btnSettings">⚙ 설정</button>
       <span class="appver" id="appVer" title="서버에 배포된 빌드">버전 확인 중…</span>
     </div>
   </header>
 
   <main>
+    <!-- Settings (toggled by the ⚙ 설정 button) -->
+    <section class="panel settings hidden" id="settings">
+      <div class="settings-head">
+        <h2>⚙ 설정</h2>
+        <button class="ghost" id="btnSettingsClose">닫기 ✕</button>
+      </div>
+      <div class="settings-grid">
+
+        <div class="settings-card">
+          <h3>스냅샷 저장 (분/시/일)</h3>
+          <label class="field"><span>저장 위치(서버 경로)</span>
+            <input id="saveDir" type="text" placeholder="/var/lib/portal_data" /></label>
+          <div class="toggle-row">
+            <label><input type="checkbox" id="persMinute" /> 분</label>
+            <label><input type="checkbox" id="persHour" /> 시간</label>
+            <label><input type="checkbox" id="persDay" /> 일</label>
+            <label>보관 <input id="persRetention" type="number" min="0" value="0" style="width:64px" /></label>
+            <label><input type="checkbox" id="persCompress" /> 압축(gzip)</label>
+          </div>
+          <div class="actions"><button id="btnPersistApply" class="primary">적용</button></div>
+          <p id="persistMsg" class="msg"></p>
+        </div>
+
+        <div class="settings-card">
+          <h3>캡처 제외 IP / 서브넷</h3>
+          <p class="hint">한 줄에 하나 — IP(<code>10.0.0.5</code>) 또는 CIDR(<code>10.93.0.0/16</code>).
+            라이브 캡처(tshark) 시 해당 트래픽을 제외합니다.</p>
+          <textarea id="captureExclude" rows="6" placeholder="10.0.0.5&#10;10.93.0.0/16"></textarea>
+          <div class="actions"><button id="btnCaptureApply" class="primary">적용</button></div>
+          <p id="captureMsg" class="msg"></p>
+        </div>
+
+        <div class="settings-card">
+          <h3>자동 업데이트</h3>
+          <label class="chkline"><input type="checkbox" id="updEnabled" /> 자동 업데이트 사용</label>
+          <label class="field"><span>감시 폴더(새 번들이 놓이는 서버 경로, 선택)</span>
+            <input id="updWatchDir" type="text" placeholder="/var/lib/portal_updates" /></label>
+          <label class="field"><span>원격 소스 base URL (versions.json 위치, 선택)</span>
+            <input id="updRemoteBase" type="text" placeholder="https://.../download" /></label>
+          <label class="field"><span>토큰(비공개 소스용, 변경 시에만 입력)</span>
+            <input id="updToken" type="password" placeholder="••••••" /></label>
+          <div class="toggle-row">
+            <label><input type="checkbox" id="updAutoApply" /> 새 버전 자동 적용</label>
+          </div>
+          <div class="actions">
+            <button id="btnUpdSave" class="ghost">설정 저장</button>
+            <button id="btnUpdCheck" class="ghost">지금 확인</button>
+            <button id="btnUpdApply" class="primary">업데이트 적용</button>
+            <button id="btnUpdRestart" class="ghost">재시작</button>
+          </div>
+          <p id="updMsg" class="msg"></p>
+          <p id="updStatus" class="hint"></p>
+        </div>
+
+      </div>
+    </section>
+
     <!-- Controls: file upload + live capture, side by side -->
     <div class="controls-row">
     <section class="panel controls controls-file">
@@ -121,20 +179,6 @@
     <!-- System / storage dashboard (always visible) -->
     <section class="panel sysmon" id="sysmon">
       <h2>시스템 · 저장 대시보드</h2>
-      <details class="advanced" id="persistSettings">
-        <summary>수집 저장 설정 (분/시/일 단위 스냅샷 · 저장 위치)</summary>
-        <label class="field"><span>저장 위치(서버 경로)</span>
-          <input id="saveDir" type="text" placeholder="/var/lib/portal_data" /></label>
-        <div class="toggle-row">
-          <label><input type="checkbox" id="persMinute" /> 분</label>
-          <label><input type="checkbox" id="persHour" /> 시간</label>
-          <label><input type="checkbox" id="persDay" /> 일</label>
-          <label>보관 개수 <input id="persRetention" type="number" min="0" value="0" style="width:70px" /></label>
-          <label><input type="checkbox" id="persCompress" /> 압축 저장(gzip)</label>
-          <button id="btnPersistApply" class="primary" style="flex:0 0 auto">적용</button>
-        </div>
-        <p id="persistMsg" class="msg"></p>
-      </details>
       <div class="overview" id="sysCards"></div>
       <div id="savedFiles"></div>
       <pre id="filePreview" class="filepreview hidden"></pre>

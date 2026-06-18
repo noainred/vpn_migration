@@ -638,6 +638,89 @@ async function previewFile(name) {
   } catch (e) { pre.textContent = "요청 실패: " + e; }
 }
 
+// ---- settings menu (snapshot / capture exclude / auto-update) -------------
+function toggleSettings(show) {
+  const s = $("#settings");
+  const open = (show === undefined) ? s.classList.contains("hidden") : show;
+  s.classList.toggle("hidden", !open);
+  if (open) { loadCaptureCfg(); loadUpdateCfg(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+}
+async function loadCaptureCfg() {
+  try { const j = await (await fetch("/api/capture/config")).json();
+    $("#captureExclude").value = (j.exclude || []).join("\n"); } catch (e) { /* */ }
+}
+async function applyCaptureCfg() {
+  const list = $("#captureExclude").value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const el = $("#captureMsg");
+  try {
+    const j = await (await fetch("/api/capture/config", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exclude: list }) })).json();
+    if (j.ok) { el.textContent = "저장됨 · 필터: " + (j.filter || "(없음)") + " · 다음 캡처부터 적용"; el.className = "msg ok"; }
+    else { el.textContent = j.error || "실패"; el.className = "msg err"; }
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+}
+async function loadUpdateCfg() {
+  try {
+    const c = (await (await fetch("/api/update/config")).json()).config || {};
+    $("#updEnabled").checked = !!c.enabled; $("#updWatchDir").value = c.watch_dir || "";
+    $("#updRemoteBase").value = c.remote_base || ""; $("#updAutoApply").checked = !!c.auto_apply;
+    $("#updToken").placeholder = c.has_token ? "설정됨 (변경 시에만 입력)" : "토큰 없음";
+  } catch (e) { /* */ }
+  renderUpdateStatus();
+}
+async function applyUpdateCfg() {
+  const body = { enabled: $("#updEnabled").checked, watch_dir: $("#updWatchDir").value,
+    remote_base: $("#updRemoteBase").value, auto_apply: $("#updAutoApply").checked };
+  const t = $("#updToken").value.trim(); if (t) body.token = t;
+  const el = $("#updMsg");
+  try {
+    const j = await (await fetch("/api/update/config", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+    el.textContent = j.ok ? "설정 저장됨" : "실패"; el.className = "msg " + (j.ok ? "ok" : "err");
+    $("#updToken").value = ""; renderUpdateStatus();
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+}
+async function checkUpdate() {
+  const el = $("#updMsg"); el.textContent = "확인 중…"; el.className = "msg";
+  try {
+    const j = await (await fetch("/api/update/check", { method: "POST" })).json();
+    if (!j.ok) el.textContent = "확인 실패";
+    else if (j.available) {
+      el.textContent = "⬆ 새 버전 있음"
+        + (j.local ? " (로컬 " + j.local.version + ")" : "")
+        + (j.remote && j.remote.latest ? " (원격 " + j.remote.latest + ")" : "");
+      el.className = "msg ok"; return;
+    } else el.textContent = "이미 최신입니다 (현재 " + j.current + ")";
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+  renderUpdateStatus();
+}
+async function applyUpdate() {
+  if (!window.confirm("새 버전을 적용할까요? 적용 후 '재시작'으로 반영됩니다.")) return;
+  const el = $("#updMsg"); el.textContent = "적용 중…"; el.className = "msg";
+  try {
+    const j = await (await fetch("/api/update/apply", { method: "POST" })).json();
+    if (j.ok) { el.textContent = "적용됨: " + (j.from || "") + " → " + (j.version || "") + " · '재시작'을 누르세요"; el.className = "msg ok"; }
+    else { el.textContent = j.reason || "적용 실패"; el.className = "msg err"; }
+  } catch (e) { el.textContent = "요청 실패: " + e; el.className = "msg err"; }
+}
+async function restartUpdate() {
+  if (!window.confirm("서버를 재시작할까요? 진행 중인 캡처가 중단됩니다.")) return;
+  $("#updMsg").textContent = "재시작 요청됨 — 잠시 후 페이지를 새로고침하세요."; $("#updMsg").className = "msg";
+  try { await fetch("/api/update/restart", { method: "POST" }); } catch (e) { /* expected */ }
+}
+async function renderUpdateStatus() {
+  try {
+    const j = await (await fetch("/api/update/status")).json();
+    const c = j.config || {};
+    $("#updStatus").textContent = "현재 v" + (j.current || "?")
+      + (c.enabled ? " · 자동확인 ON" : " · 자동확인 OFF")
+      + (j.latest ? " · 최신 " + j.latest : "")
+      + (j.available ? " · ⬆ 업데이트 가능" : "")
+      + (j.pending_restart ? " · 적용됨(재시작 대기)" : "")
+      + (j.error ? " · " + j.error : "");
+  } catch (e) { /* */ }
+}
+
 // ---- exports --------------------------------------------------------------
 function setupExports(mode, json) {
   const data = json.data, ex = json.exports || {};
@@ -691,6 +774,13 @@ function init() {
   $("#btnLiveStopBar").addEventListener("click", stopLive);
   $("#btnFullTopo").addEventListener("click", openFullTopo);
   $("#btnPersistApply").addEventListener("click", applyPersist);
+  $("#btnSettings").addEventListener("click", () => toggleSettings());
+  $("#btnSettingsClose").addEventListener("click", () => toggleSettings(false));
+  $("#btnCaptureApply").addEventListener("click", applyCaptureCfg);
+  $("#btnUpdSave").addEventListener("click", applyUpdateCfg);
+  $("#btnUpdCheck").addEventListener("click", checkUpdate);
+  $("#btnUpdApply").addEventListener("click", applyUpdate);
+  $("#btnUpdRestart").addEventListener("click", restartUpdate);
   bindTabs();
   document.addEventListener("click", (e) => {
     const th = e.target.closest && e.target.closest("th.sortable");
