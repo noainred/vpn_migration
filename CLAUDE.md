@@ -86,3 +86,11 @@ The real input is tshark CSV that can be **tens of GB**. Design consequences:
   defined locally (ThreadingMixIn + HTTPServer).
 - A->B and B->A are the **same conversation** (dedup), always with a
   per-direction breakdown kept alongside the merged total.
+
+## Workflow
+
+- **Always open/update a pull request when work is finished** (base: `main`,
+  head: the feature branch). A PR already exists for the current feature
+  branch, so further pushes to it update that PR automatically; for a new
+  feature branch, open a fresh PR into `main` once the work is committed.
+
