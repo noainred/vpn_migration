@@ -54,15 +54,38 @@ def _atomic_write_json(path, payload):
     os.replace(tmp, path)
 
 
+def _is_capture_file(name):
+    """True for raw capture files (*.csv / *.csv.gz / *.gz), but NOT aggregated
+    snapshot JSON (flow_*.json[.gz]) — those belong to --merge, not raw analysis."""
+    low = name.lower()
+    if low.endswith(".csv") or low.endswith(".csv.gz"):
+        return True
+    if low.endswith(".gz") and not low.endswith(".json.gz") \
+            and not any(t in name for t in ("flow_min_", "flow_hour_", "flow_day_")):
+        return True
+    return False
+
+
+def _find_captures(root):
+    """Recursively collect capture files under ``root`` (including subdirectories),
+    skipping snapshot JSON. Sorted for deterministic parallel chunking."""
+    out = []
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            if _is_capture_file(fn):
+                out.append(os.path.join(dirpath, fn))
+    return sorted(out)
+
+
 def _resolve(paths, merge=False):
     """Expand globs and directories into work items.
 
     * merge mode: a directory is kept as-is (``load_report`` reads a server's
       portal_data dir); files/globs are report files.
-    * analyze mode: a directory is expanded to the capture files inside it
-      (``*.csv`` / ``*.csv.gz`` / ``*.gz``), because analysis reads files — this
-      is what makes pointing at e.g. ``/data/tinc/`` work instead of failing
-      with "Is a directory".
+    * analyze mode: a directory is expanded — **recursively, including
+      subdirectories** — to the capture files inside it (``*.csv`` / ``*.csv.gz``
+      / ``*.gz``), so pointing at e.g. ``/data/tinc/`` reads logs from the whole
+      tree. Aggregated snapshot JSON is skipped. Explicit ``**`` globs also work.
 
     Returns ``(resolved, missing)``.  Order is preserved; glob/dir matches are
     sorted so parallel chunking is deterministic.
@@ -75,16 +98,14 @@ def _resolve(paths, merge=False):
         if os.path.isdir(p):
             if merge:
                 resolved.append(p)          # load_report() reads a server dir
-            else:                            # analysis needs files -> expand
-                caps = sorted(globmod.glob(os.path.join(p, "*.csv"))
-                              + globmod.glob(os.path.join(p, "*.csv.gz"))
-                              + globmod.glob(os.path.join(p, "*.gz")))
+            else:                            # analysis needs files -> recurse
+                caps = _find_captures(p)
                 if caps:
                     resolved.extend(caps)
                 else:
-                    missing.append(p + " (디렉터리에 .csv/.gz 캡처 없음)")
+                    missing.append(p + " (하위 디렉터리 포함 .csv/.gz 캡처 없음)")
             continue
-        matched = sorted(globmod.glob(p))
+        matched = sorted(globmod.glob(p, recursive=True))   # ** supported
         if matched:
             resolved.extend(matched)
         elif os.path.exists(p):

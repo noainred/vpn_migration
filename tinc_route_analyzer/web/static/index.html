@@ -58,7 +58,7 @@
         <div class="settings-card">
           <h3>분석 서버 경로 (기본)</h3>
           <p class="hint">분석에 사용할 서버 경로를 미리 지정합니다 — 한 줄에 하나(파일 · 글롭 ·
-            디렉터리). 지정하면 <b>분석 화면의 경로 입력란은 숨겨지고</b> 이 경로를 사용합니다.</p>
+            디렉터리는 <b>하위 폴더까지 검색</b>). 지정하면 <b>분석 화면의 경로 입력란은 숨겨지고</b> 이 경로를 사용합니다.</p>
           <textarea id="analysisPaths" rows="4" placeholder="/data/tinc/*.csv&#10;/opt/portal_data"></textarea>
           <div class="actions"><button id="btnAnalysisPaths" class="primary">적용</button></div>
           <p id="analysisPathsMsg" class="msg"></p>
@@ -164,7 +164,7 @@
         <code>portal_data</code> 디렉터리를 포탈이 <b>스트리밍 단일 패스</b>로 직접 분석합니다. 무거운 처리는
         포탈과 <b>분리된 별도 프로세스</b>에서 수행되어 포탈을 멈추지 않으며, 포탈을 재시작/업그레이드해도 작업은 계속됩니다.
         결과는 완료 시 아래 결과 화면에 자동으로 표시됩니다.</p>
-      <label class="field" id="jobPathsField"><span>서버 경로 — 한 줄에 하나 (파일 · 글롭 <code>/caps/*.csv.gz</code> · 디렉터리)</span>
+      <label class="field" id="jobPathsField"><span>서버 경로 — 한 줄에 하나 (파일 · 글롭 <code>/caps/*.csv.gz</code> · 디렉터리=하위 폴더까지 검색)</span>
         <textarea id="jobPaths" rows="4" placeholder="/caps/capture-2026-06-18.csv&#10;/caps/*.csv.gz&#10;/opt/portal_data"></textarea></label>
       <p class="hint hidden" id="jobPathsNote"></p>
       <div class="toggle-row">

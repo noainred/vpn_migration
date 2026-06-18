@@ -160,6 +160,23 @@ class TestDirectoryHandling(unittest.TestCase):
             self.assertEqual(st["state"], "done")
             self.assertEqual(st["packets"], 3)
 
+    def test_analyze_recurses_subdirectories(self):
+        # Captures nested in subdirectories must be found; snapshot JSON skipped.
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            sub = os.path.join(d, "2026", "06")
+            os.makedirs(sub)
+            with open(os.path.join(sub, "cap.csv"), "w", encoding="utf-8") as fh:
+                fh.write(CSV)
+            with open(os.path.join(d, "srv_flow_day_2026-06-18.json"), "w", encoding="utf-8") as fh:
+                fh.write('{"mode":"flow"}')        # aggregated snapshot -> must be ignored
+            rc = job.run([d], out, workers=1)
+            self.assertEqual(rc, 0)
+            with open(os.path.join(out, job.STATUS_NAME), encoding="utf-8") as fh:
+                st = json.load(fh)
+            self.assertEqual(st["state"], "done")
+            self.assertEqual(st["packets"], 3)       # cap.csv in the subdir
+            self.assertEqual(st["files_total"], 1)   # the snapshot JSON was skipped
+
     def test_directory_without_captures_is_clean_error(self):
         with tempfile.TemporaryDirectory() as d:
             rc = job.run([d], d, workers=1)
