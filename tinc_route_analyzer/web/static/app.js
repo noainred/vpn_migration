@@ -664,13 +664,15 @@ async function loadUpdateCfg() {
     const c = (await (await fetch("/api/update/config")).json()).config || {};
     $("#updEnabled").checked = !!c.enabled; $("#updWatchDir").value = c.watch_dir || "";
     $("#updRemoteBase").value = c.remote_base || ""; $("#updAutoApply").checked = !!c.auto_apply;
+    $("#updAutoRestart").checked = !!c.auto_restart;
     $("#updToken").placeholder = c.has_token ? "설정됨 (변경 시에만 입력)" : "토큰 없음";
   } catch (e) { /* */ }
   renderUpdateStatus();
 }
 async function applyUpdateCfg() {
   const body = { enabled: $("#updEnabled").checked, watch_dir: $("#updWatchDir").value,
-    remote_base: $("#updRemoteBase").value, auto_apply: $("#updAutoApply").checked };
+    remote_base: $("#updRemoteBase").value, auto_apply: $("#updAutoApply").checked,
+    auto_restart: $("#updAutoRestart").checked };
   const t = $("#updToken").value.trim(); if (t) body.token = t;
   const el = $("#updMsg");
   try {
@@ -713,7 +715,7 @@ async function renderUpdateStatus() {
     const j = await (await fetch("/api/update/status")).json();
     const c = j.config || {};
     $("#updStatus").textContent = "현재 v" + (j.current || "?")
-      + (c.enabled ? " · 자동확인 ON" : " · 자동확인 OFF")
+      + (c.enabled ? (c.auto_apply && c.auto_restart ? " · 무인 업데이트 ON" : " · 자동확인 ON") : " · OFF")
       + (j.latest ? " · 최신 " + j.latest : "")
       + (j.available ? " · ⬆ 업데이트 가능" : "")
       + (j.pending_restart ? " · 적용됨(재시작 대기)" : "")

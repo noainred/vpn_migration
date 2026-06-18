@@ -409,16 +409,28 @@ class UpdateManager(object):
     def stop(self):
         self._stop = True
 
+    def _tick_update(self):
+        """One unattended pass: check, optionally auto-apply, optionally restart."""
+        with self._lock:
+            enabled = self.config.get("enabled")
+            auto = self.config.get("auto_apply")
+            auto_restart = self.config.get("auto_restart")
+            pending = self.last.get("pending_restart")
+        # Don't re-apply (and spam backups) while an applied update is still
+        # awaiting a restart — the in-memory version is unchanged until re-exec.
+        if not (enabled and not pending):
+            return
+        res = self.check()
+        if auto and res.get("available"):
+            r = self.apply()
+            if r.get("ok") and auto_restart:
+                time.sleep(0.5)
+                restart_process()          # unattended restart (re-exec)
+
     def _run(self):
         while not self._stop:
             try:
-                with self._lock:
-                    enabled = self.config.get("enabled")
-                    auto = self.config.get("auto_apply")
-                if enabled:
-                    res = self.check()
-                    if auto and res.get("available"):
-                        self.apply()
+                self._tick_update()
             except Exception:  # pragma: no cover - never kill the thread
                 pass
             time.sleep(60)

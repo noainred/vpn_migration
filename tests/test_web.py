@@ -289,6 +289,36 @@ class TestUpdater(unittest.TestCase):
         self.assertIsNone(updater._accept_member("other_pkg/x.py"))
         self.assertEqual(updater._accept_member("tinc_route_analyzer/web/server.py"), "web/server.py")
 
+    def test_unattended_auto_apply_restart(self):
+        import io, tarfile, tempfile
+        from tinc_route_analyzer.web import updater
+        with tempfile.TemporaryDirectory() as tmp:
+            code = os.path.join(tmp, "code")
+            os.makedirs(os.path.join(code, "tinc_route_analyzer"))
+            with open(os.path.join(code, "tinc_route_analyzer", "__init__.py"), "w") as fh:
+                fh.write('__version__ = "1.0.0"\n')
+            watch = os.path.join(tmp, "watch"); os.makedirs(watch)
+            arc = os.path.join(watch, "tinc_route_analyzer-2.0.0.tar.gz")
+            with tarfile.open(arc, "w:gz") as tf:
+                d = b'__version__ = "2.0.0"\n'
+                ti = tarfile.TarInfo("tinc_route_analyzer/__init__.py"); ti.size = len(d)
+                tf.addfile(ti, io.BytesIO(d))
+            mgr = updater.UpdateManager(lambda: "1.0.0", code)
+            mgr.set_config({"enabled": True, "watch_dir": watch,
+                            "auto_apply": True, "auto_restart": True})
+            calls = {"n": 0}
+            orig = updater.restart_process
+            updater.restart_process = lambda: calls.__setitem__("n", calls["n"] + 1)
+            try:
+                mgr._tick_update()                      # applies + "restarts"
+                self.assertEqual(calls["n"], 1)
+                self.assertTrue(mgr.last["pending_restart"])
+                mgr._tick_update()                      # guarded: no second apply/restart
+                self.assertEqual(calls["n"], 1)
+            finally:
+                updater.restart_process = orig
+            self.assertIn('2.0.0', open(os.path.join(code, "tinc_route_analyzer", "__init__.py")).read())
+
     def test_config_never_exposes_token(self):
         import tempfile
         from tinc_route_analyzer.web import updater
