@@ -87,10 +87,13 @@ def run(iface, capture_filter, out_dir, interval=2.0, resume=False):
     def on_reset(_signum, _frame):
         reset["v"] = True
 
-    signal.signal(signal.SIGTERM, on_term)
-    signal.signal(signal.SIGINT, on_term)
-    if hasattr(signal, "SIGUSR1"):
-        signal.signal(signal.SIGUSR1, on_reset)
+    # signal.signal only works on the main thread; guard so run() can be driven
+    # in-process (tests/embedding) without raising ValueError.
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, on_term)
+        signal.signal(signal.SIGINT, on_term)
+        if hasattr(signal, "SIGUSR1"):
+            signal.signal(signal.SIGUSR1, on_reset)
 
     pps_state = {"t": started, "p": state["a"].packets}   # baseline = resumed count
 

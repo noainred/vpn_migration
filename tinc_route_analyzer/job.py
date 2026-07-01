@@ -49,7 +49,10 @@ class _Canceled(Exception):
 
 
 def _atomic_write_json(path, payload):
-    tmp = path + ".tmp"
+    # Per-pid temp name: the portal writes a "running" placeholder to the same
+    # job.json while this child writes heartbeats — a shared ``.tmp`` would let
+    # the two processes interleave bytes before os.replace.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False)
     os.replace(tmp, path)
@@ -79,7 +82,9 @@ def _find_captures(root):
 
 
 # snapshot files: ``[<host>_]flow_(min|hour|day)_<key>.json[.gz]``
-_SNAP_RE = re.compile(r"^(?:(?P<host>.+)_)?flow_(?:min|hour|day)_.+\.json(?:\.gz)?$")
+# non-greedy host so "srv1_flow_day_x" -> host "srv1" (a greedy .+ mis-grabs a
+# later "_flow_" token, mis-grouping legitimately host-prefixed files).
+_SNAP_RE = re.compile(r"^(?:(?P<host>.+?)_)?flow_(?:min|hour|day)_.+\.json(?:\.gz)?$")
 
 
 def _merge_snapshots(root):
@@ -217,11 +222,24 @@ def run(paths, out_dir, workers=1, parse_times=True, merge=False,
                 write("canceled", error="사용자가 취소했습니다")
             except Exception:
                 pass
+            # Take out any parallel pool workers too: os._exit skips the pool's
+            # finalizers, so without this they are orphaned and keep churning the
+            # multi-GB file. Only when we are the process-group leader (i.e. the
+            # portal spawned us detached with start_new_session) — never signal a
+            # foreign group (e.g. a test harness running run() in-process).
+            try:
+                if os.getpgrp() == os.getpid():
+                    os.killpg(os.getpgrp(), signal.SIGKILL)
+            except Exception:
+                pass
             os._exit(130)
         threading.Thread(target=_watchdog, daemon=True).start()
 
-    signal.signal(signal.SIGTERM, on_term)
-    signal.signal(signal.SIGINT, on_term)
+    # signal.signal only works on the main thread; guard so run() stays usable
+    # in-process (tests/embedding) without raising ValueError.
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, on_term)
+        signal.signal(signal.SIGINT, on_term)
 
     write("running", pps=0.0)
     if not resolved:

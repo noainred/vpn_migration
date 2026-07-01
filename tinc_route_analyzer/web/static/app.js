@@ -729,8 +729,12 @@ function renderSubnet(d) {
   }));
   // Keep the selected IP detail visible across periodic re-renders (live poll).
   if (state.selectedIp && d.hosts.some((h) => h.ip === state.selectedIp)) {
-    const ch = $("#tab-subnet").querySelector('.ip-chip[data-ip="' + state.selectedIp + '"]');
-    if (ch) ch.classList.add("sel");
+    // Compare dataset values rather than building a CSS selector from an
+    // untrusted IP (a crafted ip.src like `1.2.3.4"]` is a malformed selector ->
+    // querySelector throws -> renderSubnet aborts -> live view appears frozen).
+    $("#tab-subnet").querySelectorAll(".ip-chip").forEach((x) => {
+      if (x.dataset.ip === state.selectedIp) x.classList.add("sel");
+    });
     showIp(d, state.selectedIp);
   }
 }
@@ -761,20 +765,20 @@ function renderActivity(d) {
   const blocks = top.map((h) => {
     let grid = `<table class="heat"><tr><th></th>${Array.from({ length: 24 }, (_, i) => `<th>${i}</th>`).join("")}</tr>`;
     for (let day = 0; day < 7; day++) {
-      grid += `<tr><th>${wd[day]}</th>`;
+      grid += `<tr><th>${esc(wd[day])}</th>`;
       for (let hr = 0; hr < 24; hr++) {
         const v = h.week[day * 24 + hr] || 0;
         const a = v ? (0.15 + 0.85 * Math.sqrt(v / maxv)).toFixed(2) : 0;
         const bg = v ? `background:rgba(79,70,229,${a})` : "";
-        grid += `<td class="cell" style="${bg}" title="${wd[day]} ${hr}:00 — ${num(v)}p"></td>`;
+        grid += `<td class="cell" style="${bg}" title="${esc(wd[day])} ${hr}:00 — ${num(v)}p"></td>`;
       }
       grid += `</tr>`;
     }
     grid += `</table>`;
     const idle = (h.idle_windows || []).map((w) =>
-      `<span class="idle-tag">${wd[w.weekday]} ${String(w.start_hour).padStart(2, "0")}:00–${String(w.end_hour).padStart(2, "0")}:59</span>`).join("") || "<span class='muted'>유휴 구간 없음(항상 활성)</span>";
+      `<span class="idle-tag">${esc(wd[w.weekday])} ${esc(String(w.start_hour).padStart(2, "0"))}:00–${esc(String(w.end_hour).padStart(2, "0"))}:59</span>`).join("") || "<span class='muted'>유휴 구간 없음(항상 활성)</span>";
     return `<div class="subnet-box" style="margin-bottom:14px">
-      <h4>${esc(h.ip)} <span class="muted">(${esc(h.subnet)}, 활성 ${h.active_hours}시간/주, ${num(h.total_packets)}p)</span></h4>
+      <h4>${esc(h.ip)} <span class="muted">(${esc(h.subnet)}, 활성 ${esc(h.active_hours)}시간/주, ${num(h.total_packets)}p)</span></h4>
       <div class="heatwrap">${grid}</div>
       <div style="margin-top:8px"><b>마이그레이션 가능 유휴 창</b>(네트워크는 활성인데 이 IP는 무통신): ${idle}</div></div>`;
   }).join("");

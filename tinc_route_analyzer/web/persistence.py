@@ -286,10 +286,13 @@ class Persistence(object):
         return os.path.join(DEFAULT_DIR, "config.json")
 
     def _save_config(self):
+        path = self._config_path()
         try:
             os.makedirs(DEFAULT_DIR, exist_ok=True)
-            with open(self._config_path(), "w", encoding="utf-8") as fh:
+            tmp = "%s.%d.tmp" % (path, os.getpid())   # atomic; survives crash / 2nd portal
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self.config, fh)
+            os.replace(tmp, path)
         except OSError:  # pragma: no cover
             pass
 

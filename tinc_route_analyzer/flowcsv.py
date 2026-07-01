@@ -336,9 +336,11 @@ def _parse_flags(flags, syn, ack):
         return ((syn or "").strip() in truthy if syn is not None else None,
                 (ack or "").strip() in truthy if ack is not None else None)
     if flags:
+        # tcp.flags is a hex field ("0x0012" or a bare "12"). Always base-16 —
+        # parsing a bare value as decimal flipped SYN/ACK (e.g. "10" is 0x10=ACK,
+        # not decimal 10=0x0A=SYN), corrupting the authoritative handshake basis.
         try:
-            val = int(flags, 16) if flags.strip().lower().startswith("0x") \
-                else int(flags)
+            val = int(flags.strip(), 16)
         except ValueError:
             return None, None
         return bool(val & 0x02), bool(val & 0x10)  # SYN=0x02, ACK=0x10
@@ -511,8 +513,7 @@ class FlowAnalysis:
             self.hosts[ip] = h
         return h
 
-    def _conv(self, a, b):
-        key = tuple(sorted((a, b)))
+    def _conv(self, key):
         c = self.convs.get(key)
         if c is None:
             c = {"a": key[0], "b": key[1], "packets": 0, "bytes": 0,
@@ -563,7 +564,10 @@ class FlowAnalysis:
         hd["recv_packets"] += 1
         hd["peers"].add(src)
 
-        c = self._conv(src, dst)
+        # Order the host pair once (a single comparison, no list+sort alloc) and
+        # reuse it for the conversation key, subnet key and host_pairs.
+        pair = (src, dst) if src <= dst else (dst, src)
+        c = self._conv(pair)
         c["packets"] += 1
         c["bytes"] += length
         c["protocols"].add(rec.proto)
@@ -626,8 +630,8 @@ class FlowAnalysis:
         else:
             c["services"].add((rec.proto, None))
 
-        sa, sb = subnet_of(rec.src), subnet_of(rec.dst)
-        smk = tuple(sorted((sa, sb)))
+        sa, sb = hs["subnet"], hd["subnet"]      # already computed by _host()
+        smk = (sa, sb) if sa <= sb else (sb, sa)
         sm = self.subnet_matrix.get(smk)
         if sm is None:
             sm = {"a": smk[0], "b": smk[1], "packets": 0, "bytes": 0,
@@ -635,7 +639,7 @@ class FlowAnalysis:
             self.subnet_matrix[smk] = sm
         sm["packets"] += 1
         sm["bytes"] += length
-        sm["host_pairs"].add(tuple(sorted((rec.src, rec.dst))))
+        sm["host_pairs"].add(pair)
         if sp is not None:
             sm["services"].add((rec.proto, sp))
 
@@ -780,9 +784,12 @@ def _build_units(path: str, workers: int, parse_times: bool, target_chunk: int,
     size = os.path.getsize(path)
     cmap, has_header = detect_layout(path)
     cmap_items = tuple(cmap.items())
-    if workers <= 1 or size < target_chunk * 2:
+    # Split down to ~8 MiB pieces (not the 64 MiB target) so a few-hundred-MB
+    # capture actually uses all workers instead of running as one chunk.
+    floor = max(1, min(target_chunk, 8 * 1024 * 1024))
+    if workers <= 1 or size < floor * 2:
         return [(path, 0, None, cmap_items, parse_times, True, has_header, flow_filter)]
-    nchunks = max(1, min(workers * 4, size // target_chunk))
+    nchunks = max(1, min(workers * 4, size // floor))
     step = size // nchunks
     units = []
     with open(path, "rb") as f:
@@ -1208,13 +1215,13 @@ def filter_analysis(an, flt):
         ns = dict(s)
         ns["clients"] = clients
         out.services[(server, proto, port)] = ns
-        h = out.hosts.get(server)
-        if h is not None:
-            h["offered"].add((proto, port))
+        # Ensure the server and its clients appear in the host inventory even if
+        # no surviving conversation named them (realistic in the merge path where
+        # a limit-capped report can carry services whose conversation rows were
+        # truncated); otherwise the service is emitted but its hosts vanish.
+        out._host(server)["offered"].add((proto, port))
         for cl in clients:
-            hc = out.hosts.get(cl)
-            if hc is not None:
-                hc["is_client"] = True
+            out._host(cl)["is_client"] = True
     for p, v in an.proto_stats.items():
         if p in flt.protos:
             continue

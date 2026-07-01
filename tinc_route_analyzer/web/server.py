@@ -43,7 +43,7 @@ SAMPLES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "samples",
 )
-MAX_BODY = 256 * 1024 * 1024  # 256 MiB upload guard
+MAX_BODY = 96 * 1024 * 1024  # request-body cap (covers the 64 MiB inline-CSV path)
 # Browser uploads stream the whole file into memory, so cap direct CSV analysis;
 # above this, users run the streaming CLI and upload the small report.json.
 MAX_INLINE_CSV = 64 * 1024 * 1024
@@ -139,7 +139,12 @@ def analyze_payload(payload: dict) -> dict:
 
     # 3) tinc VPN logs (the original input type).
     host_map = payload.get("hostMap") or None
-    year = int(payload.get("year") or DEFAULT_YEAR)
+    try:
+        year = int(payload.get("year") or DEFAULT_YEAR)
+    except (TypeError, ValueError):
+        year = DEFAULT_YEAR
+    if not (1970 <= year <= 2100):        # bound client-supplied year
+        year = DEFAULT_YEAR
     subnet_dump = payload.get("subnetDump")
     subnet_dump_texts = [subnet_dump] if subnet_dump else None
     analysis, stats = analyze_texts(
@@ -197,7 +202,7 @@ def _read_samples() -> list:
 
 # --- live packet capture (opt-in, server-side tshark) ----------------------
 
-_IFACE_RE = re.compile(r"^[A-Za-z0-9._:@{}\\-]{1,48}$")
+_IFACE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,48}$")   # no backslash/@/{} in real ifaces
 
 
 def _tshark_argv(iface: str, capture_filter: str = "") -> list:
@@ -506,6 +511,7 @@ class JobController(object):
 
     def __init__(self, out_dir):
         self.out_dir = out_dir
+        self._start_lock = threading.Lock()   # serialize read-check-spawn
 
     def _status_path(self):
         return os.path.join(self.out_dir, job.STATUS_NAME)
@@ -522,7 +528,7 @@ class JobController(object):
 
     def _write_status(self, payload):
         path = self._status_path()
-        tmp = path + ".tmp"
+        tmp = "%s.%d.tmp" % (path, os.getpid())   # unique vs the child's writer
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False)
@@ -565,6 +571,14 @@ class JobController(object):
 
     def start(self, paths, workers=1, parse_times=True, merge=False,
               filter_spec=None):
+        # Serialize read-check-spawn so two concurrent POST /api/job/start
+        # (ThreadingHTTPServer) can't both pass is_running() and double-spawn a
+        # job onto the same job.json/report.
+        with self._start_lock:
+            return self._start_locked(paths, workers, parse_times, merge, filter_spec)
+
+    def _start_locked(self, paths, workers=1, parse_times=True, merge=False,
+                      filter_spec=None):
         if self.is_running():
             return False, "이미 분석 작업이 실행 중입니다"
         clean = [str(p).strip() for p in (paths or []) if str(p).strip()]
@@ -692,13 +706,21 @@ def _load_capture_cfg():
     return {"exclude": [], "resume": True}   # resume ON by default
 
 
-def _save_capture_cfg(cfg):
+def _atomic_write_json(path, obj):
+    """Write JSON via a per-pid temp + os.replace so a crash or a second portal
+    instance can never leave a torn config that _load_* then silently discards."""
     try:
-        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
-        with open(_CAPTURE_CFG_PATH, "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, ensure_ascii=False)
+        os.replace(tmp, path)
     except OSError:
         pass
+
+
+def _save_capture_cfg(cfg):
+    _atomic_write_json(_CAPTURE_CFG_PATH, cfg)
 
 
 # --- analysis exclusion filter (re-analysis conditions; last-used saved) ----
@@ -777,12 +799,7 @@ def _load_analysis_filter():
 
 
 def _save_analysis_filter(spec):
-    try:
-        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
-        with open(_ANALYSIS_FILTER_PATH, "w", encoding="utf-8") as fh:
-            json.dump(spec, fh, ensure_ascii=False)
-    except OSError:
-        pass
+    _atomic_write_json(_ANALYSIS_FILTER_PATH, spec)
 
 
 # --- default analysis server paths (pre-set in Settings) --------------------
@@ -803,12 +820,7 @@ def _load_analysis_paths():
 
 def _save_analysis_paths(paths):
     cleaned = [str(p).strip() for p in (paths or []) if str(p).strip()]
-    try:
-        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
-        with open(_ANALYSIS_PATHS_PATH, "w", encoding="utf-8") as fh:
-            json.dump({"paths": cleaned}, fh, ensure_ascii=False)
-    except OSError:
-        pass
+    _atomic_write_json(_ANALYSIS_PATHS_PATH, {"paths": cleaned})
     return cleaned
 
 
@@ -834,12 +846,7 @@ def _load_presets():
 
 
 def _save_presets(presets):
-    try:
-        os.makedirs(persistence.DEFAULT_DIR, exist_ok=True)
-        with open(_ANALYSIS_PRESETS_PATH, "w", encoding="utf-8") as fh:
-            json.dump({"presets": presets}, fh, ensure_ascii=False)
-    except OSError:
-        pass
+    _atomic_write_json(_ANALYSIS_PRESETS_PATH, {"presets": presets})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -987,7 +994,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 result = analyze_payload(payload)
             except Exception as exc:  # pragma: no cover - defensive
-                self._send_json({"ok": False, "error": f"analysis failed: {exc}"}, 500)
+                print("[portal] analyze error: %s" % exc, file=sys.stderr)
+                self._send_json({"ok": False, "error": "analysis failed"}, 500)  # no exc leak
                 return
             self._send_json(result, 200 if result.get("ok") else 400)
         elif path == "/api/live/start":
@@ -1136,6 +1144,10 @@ def run(host: str = "127.0.0.1", port: int = 8080) -> None:
     httpd = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host if host != '0.0.0.0' else 'localhost'}:{port}/"
     print(f"tinc route analyzer portal running at {url}")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"  ⚠ WARNING: bound to {host} with NO authentication — the portal "
+              "can read server files, control capture, and self-update. Keep it on "
+              "127.0.0.1, or put it behind an authenticating reverse proxy / firewall.")
     print(f"live packet capture: {'ENABLED' if _CAPTURE_ENABLED else 'disabled'}"
           + ("" if _CAPTURE_ENABLED else " (start with --enable-capture)"))
     _PERSIST.start()

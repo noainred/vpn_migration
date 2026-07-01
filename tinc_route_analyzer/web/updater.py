@@ -234,8 +234,15 @@ def _auth_request(url, token):
     return urllib.request.Request(url, headers=headers)
 
 
+def _is_http_url(url):
+    u = (url or "").strip().lower()
+    return u.startswith("http://") or u.startswith("https://")
+
+
 def fetch_remote_versions(base_url, token=None, timeout=10.0):
     url = _join_url(base_url, "versions.json")
+    if not _is_http_url(url):     # never let urlopen touch file://, ftp://, etc.
+        return None, "refusing non-http(s) update URL"
     try:
         with urllib.request.urlopen(_auth_request(url, token), timeout=timeout) as r:
             raw = r.read(4 * 1024 * 1024)
@@ -268,6 +275,8 @@ def check_remote(base_url, current_version, token=None, timeout=10.0):
 
 
 def download_archive(url, dest_dir, token=None, timeout=120.0, max_bytes=MAX_BUNDLE_BYTES):
+    if not _is_http_url(url):
+        return {"ok": False, "reason": "refusing non-http(s) download URL"}
     name = os.path.basename((url or "").split("?")[0])
     if not _ARCHIVE_RE.search(name):
         return {"ok": False, "reason": "disallowed archive name: %s" % (name or "(none)")}
