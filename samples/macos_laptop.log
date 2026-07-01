@@ -1,0 +1,6 @@
+Jun 16 10:20:07 laptop tincd[789]: Connection with cloud (203.0.113.10 port 655) activated
+Jun 16 10:20:10 laptop tincd[789]: Got ADD_SUBNET from cloud (203.0.113.10 port 655) for cloud 10.30.0.0/24
+Jun 16 10:24:00 laptop tincd[789]: Sending packet of 300 bytes to branch2 (198.51.100.22 port 655)
+Jun 16 10:24:00 laptop tincd[789]: Sending packet of 300 bytes to branch2 (198.51.100.22 port 655)
+Jun 16 10:24:02 laptop tincd[789]: Received packet of 150 bytes from branch2 (198.51.100.22 port 655)
+Jun 16 10:24:35 laptop tincd[789]: Received packet of 200 bytes from cloud (203.0.113.10 port 655)

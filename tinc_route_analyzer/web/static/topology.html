@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>토폴로지 — 전체 화면</title>
+<style>
+  :root { --accent:#4f46e5; --relay:#0e7490; --muted:#6a7589; --line:#e3e8f0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, "Segoe UI", "Noto Sans KR", sans-serif; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 46px; display: flex; align-items: center;
+    gap: 10px; padding: 0 14px; background: #1f2433; color: #fff; z-index: 10; }
+  #bar b { font-size: 14px; } #bar .muted { color: #aab; font-size: 12px; }
+  #bar button { background: #2f3650; color: #fff; border: 1px solid #3c445f;
+    border-radius: 7px; padding: 5px 11px; cursor: pointer; font-size: 13px; }
+  #bar button:hover { background: #3c445f; }
+  #bar a { color: #c7ccff; text-decoration: none; font-size: 13px; margin-left: auto; }
+  #wrap { position: fixed; top: 46px; left: 0; right: 0; bottom: 0; background:
+    radial-gradient(circle at 30% 20%, #f7f8fc, #eef1f7); overflow: hidden; cursor: grab; }
+  #wrap.grabbing { cursor: grabbing; }
+  svg { width: 100%; height: 100%; display: block; }
+  .edge { stroke: #b9c0d6; stroke-opacity: .8; }
+  .edge.relay { stroke: var(--relay); stroke-dasharray: 6 5; }
+  .node circle { fill: var(--accent); stroke: #fff; stroke-width: 2; cursor: pointer; }
+  .node.secondary circle { fill: #fff; stroke: var(--muted); stroke-width: 2; stroke-dasharray: 4 3; }
+  .node.relay circle { stroke: var(--relay); stroke-width: 3.5; }
+  .node text { font-size: 11px; font-weight: 700; fill: #1b2233; pointer-events: none; }
+  .node text.sub { font-size: 8.5px; font-weight: 500; fill: var(--muted); }
+  #hint { position: fixed; bottom: 12px; left: 14px; font-size: 12px; color: var(--muted);
+    background: rgba(255,255,255,.85); padding: 6px 10px; border-radius: 8px; }
+  #empty { position: fixed; top: 50%; left: 0; right: 0; text-align: center; color: var(--muted); }
+</style>
+<style id="zoomStyle"></style>
+</head>
+<body>
+  <div id="bar">
+    <b id="title">토폴로지</b>
+    <span class="muted" id="counts"></span>
+    <button id="zin">＋</button><button id="zout">－</button>
+    <button id="fit">맞춤</button><button id="reset">재배치</button>
+    <a href="/">← 포탈로 돌아가기</a>
+  </div>
+  <div id="wrap">
+    <svg id="svg"><g id="scene"><g id="edges"></g><g id="nodes"></g></g></svg>
+    <div id="empty" style="display:none">표시할 토폴로지 데이터가 없습니다. 포탈에서 분석 후 "토폴로지 전체화면"을 누르세요.</div>
+  </div>
+  <div id="hint">휠: 확대/축소 · 빈 곳 드래그: 이동 · 노드 드래그: 위치 고정</div>
+<script>
+"use strict";
+const SVG = document.getElementById("svg"), scene = document.getElementById("scene");
+const gEdges = document.getElementById("edges"), gNodes = document.getElementById("nodes");
+const NS = "http://www.w3.org/2000/svg";
+let nodes = [], edges = [], view = { x: 0, y: 0, k: 1 }, W = 0, H = 0, alpha = 1, raf = null;
+
+const zoomStyle = document.getElementById("zoomStyle");
+function svgEl(t, attrs) { const e = document.createElementNS(NS, t); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function updateZoom() {
+  // Counter-scale labels so they stay a constant readable size at any zoom.
+  const k = view.k || 1;
+  const showAll = k >= 0.55;     // when zoomed in, show every label
+  const showSub = k >= 0.95;
+  zoomStyle.textContent =
+    ".node text{font-size:" + (12 / k).toFixed(2) + "px;}" +
+    ".node text.sub{font-size:" + (9 / k).toFixed(2) + "px;" + (showSub ? "" : "display:none;") + "}" +
+    (showAll ? "" : ".node:not(.big) text{display:none;}");  // zoomed out: keep only hub labels
+}
+function applyView() {
+  scene.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+  updateZoom();
+}
+
+async function load() {
+  let g = null;
+  try { const j = await (await fetch("/api/last")).json(); g = j && j.data; } catch (e) { /* */ }
+  if (!g || !g.nodes || !g.nodes.length) { document.getElementById("empty").style.display = "block"; return; }
+  document.getElementById("title").textContent = g.title || "토폴로지";
+  document.getElementById("counts").textContent = `노드 ${g.nodes.length} · 엣지 ${g.edges.length}`;
+  const idx = {};
+  const maxW = Math.max(1, ...g.nodes.map((n) => n.weight || 0));
+  nodes = g.nodes.map((n, i) => {
+    idx[n.id] = i;
+    return { ...n, r: 8 + 24 * Math.sqrt((n.weight || 0) / maxW),
+      x: Math.cos(i) * 160 + (Math.random() - .5) * 40, y: Math.sin(i) * 160 + (Math.random() - .5) * 40,
+      vx: 0, vy: 0, fixed: false };
+  });
+  edges = g.edges.map((e) => ({ s: idx[e.a], t: idx[e.b], kind: e.kind, weight: e.weight || 0 }))
+    .filter((e) => e.s != null && e.t != null);
+  build();
+  resize(); restart(); setTimeout(fit, 50);
+}
+
+function build() {
+  gEdges.innerHTML = ""; gNodes.innerHTML = "";
+  const maxE = Math.max(1, ...edges.map((e) => e.weight));
+  edges.forEach((e) => {
+    e.el = svgEl("line", { class: "edge" + (e.kind === "relay" ? " relay" : ""),
+      "vector-effect": "non-scaling-stroke",
+      "stroke-width": (1 + 2.5 * Math.sqrt(e.weight / maxE)).toFixed(2) });
+    gEdges.appendChild(e.el);
+  });
+  nodes.forEach((n) => {
+    const g = svgEl("g", { class: "node " + (n.kind || "primary") + (n.r >= 16 ? " big" : "") });
+    g.appendChild(svgEl("circle", { r: n.r.toFixed(1), "vector-effect": "non-scaling-stroke" }));
+    const t = svgEl("text", { "text-anchor": "middle", y: 4 }); t.textContent = n.label; g.appendChild(t);
+    if (n.sub) { const s = svgEl("text", { class: "sub", "text-anchor": "middle", y: (n.r + 11).toFixed(1) }); s.textContent = n.sub; g.appendChild(s); }
+    n.el = g; gNodes.appendChild(g);
+    nodeDrag(n);
+  });
+}
+
+// ---- force simulation (animated, non-blocking) ----
+function restart() { alpha = 1; if (!raf) raf = requestAnimationFrame(tick); }
+function tick() {
+  const n = nodes.length;
+  const kRep = 3800, kSpring = 0.035, rest = Math.min(95, 42 + 360 / Math.sqrt(n + 1)), cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < n; j++) {
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
+      const minD = a.r + b.r + 6;
+      let f = kRep / d2;
+      if (d2 < minD * minD) f += (minD - Math.sqrt(d2)) * 0.9 / Math.sqrt(d2);  // collision
+      const fx = dx * f, fy = dy * f;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    }
+    a.vx += (cx - a.x) * 0.008; a.vy += (cy - a.y) * 0.008;  // centering (compact)
+  }
+  edges.forEach((e) => {
+    const a = nodes[e.s], b = nodes[e.t];
+    let dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = kSpring * (d - rest);
+    const fx = dx / d * f, fy = dy / d * f;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+  });
+  for (let i = 0; i < n; i++) {
+    const a = nodes[i];
+    if (a.fixed) { a.vx = a.vy = 0; continue; }
+    a.vx *= 0.85; a.vy *= 0.85;
+    a.x += Math.max(-30, Math.min(30, a.vx * alpha));
+    a.y += Math.max(-30, Math.min(30, a.vy * alpha));
+  }
+  render();
+  alpha *= 0.985;
+  if (alpha > 0.02) raf = requestAnimationFrame(tick); else raf = null;
+}
+function render() {
+  edges.forEach((e) => { const a = nodes[e.s], b = nodes[e.t];
+    e.el.setAttribute("x1", a.x); e.el.setAttribute("y1", a.y); e.el.setAttribute("x2", b.x); e.el.setAttribute("y2", b.y); });
+  nodes.forEach((n) => n.el.setAttribute("transform", `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`));
+}
+
+// ---- pan / zoom / drag ----
+function resize() { const r = SVG.getBoundingClientRect(); W = r.width; H = r.height; }
+function zoomAt(cx, cy, factor) {
+  const k = Math.max(0.1, Math.min(6, view.k * factor));
+  view.x = cx - (cx - view.x) * (k / view.k); view.y = cy - (cy - view.y) * (k / view.k); view.k = k; applyView();
+}
+function fit() {
+  if (!nodes.length) return;
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  nodes.forEach((n) => { minX = Math.min(minX, n.x - n.r); minY = Math.min(minY, n.y - n.r);
+    maxX = Math.max(maxX, n.x + n.r); maxY = Math.max(maxY, n.y + n.r); });
+  const w = maxX - minX || 1, h = maxY - minY || 1;
+  const k = Math.max(0.45, Math.min(2.2, 0.9 * Math.min(W / w, H / h)));
+  view.k = k; view.x = W / 2 - (minX + w / 2) * k; view.y = H / 2 - (minY + h / 2) * k; applyView();
+}
+SVG.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY - 46, e.deltaY < 0 ? 1.1 : 1 / 1.1); }, { passive: false });
+let pan = null;
+const wrap = document.getElementById("wrap");
+wrap.addEventListener("mousedown", (e) => { if (e.target.closest(".node")) return; pan = { x: e.clientX - view.x, y: e.clientY - view.y }; wrap.classList.add("grabbing"); });
+window.addEventListener("mousemove", (e) => { if (pan) { view.x = e.clientX - pan.x; view.y = e.clientY - pan.y; applyView(); } });
+window.addEventListener("mouseup", () => { pan = null; wrap.classList.remove("grabbing"); });
+function nodeDrag(n) {
+  n.el.addEventListener("mousedown", (e) => {
+    e.stopPropagation();
+    n.fixed = true;
+    const move = (ev) => {
+      n.x = (ev.clientX - view.x) / view.k; n.y = (ev.clientY - 46 - view.y) / view.k;
+      restart();
+    };
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+  });
+}
+document.getElementById("zin").onclick = () => zoomAt(W / 2, H / 2, 1.2);
+document.getElementById("zout").onclick = () => zoomAt(W / 2, H / 2, 1 / 1.2);
+document.getElementById("fit").onclick = fit;
+document.getElementById("reset").onclick = () => { nodes.forEach((n, i) => { n.x = Math.cos(i) * 250; n.y = Math.sin(i) * 250; n.fixed = false; }); restart(); setTimeout(fit, 400); };
+window.addEventListener("resize", resize);
+load();
+</script>
+</body>
+</html>

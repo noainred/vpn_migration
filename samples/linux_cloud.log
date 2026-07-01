@@ -1,0 +1,13 @@
+2026-06-16T10:20:01+09:00 cloud tinc.office[3030]: Connection with hq (203.0.113.1 port 655) activated
+2026-06-16T10:20:04+09:00 cloud tinc.office[3030]: Connection with branch1 (198.51.100.21 port 655) activated
+2026-06-16T10:20:07+09:00 cloud tinc.office[3030]: Connection with laptop (192.0.2.50 port 655) activated
+2026-06-16T10:20:09+09:00 cloud tinc.office[3030]: Got ADD_SUBNET from hq (203.0.113.1 port 655) for hq 10.10.0.0/16
+2026-06-16T10:20:09+09:00 cloud tinc.office[3030]: Got ADD_SUBNET from laptop (192.0.2.50 port 655) for laptop 10.40.0.5/32
+2026-06-16T10:23:30+09:00 cloud tinc.office[3030]: Received packet of 1500 bytes from hq (203.0.113.1 port 655)
+2026-06-16T10:23:31+09:00 cloud tinc.office[3030]: Sending packet of 1460 bytes to hq (203.0.113.1 port 655)
+2026-06-16T10:24:00+09:00 cloud tinc.office[3030]: Forwarding packet from laptop to branch2 (198.51.100.22 port 655)
+2026-06-16T10:24:00+09:00 cloud tinc.office[3030]: Forwarding packet from laptop to branch2 (198.51.100.22 port 655)
+2026-06-16T10:24:02+09:00 cloud tinc.office[3030]: Forwarding packet from branch2 to laptop (192.0.2.50 port 655)
+2026-06-16T10:24:30+09:00 cloud tinc.office[3030]: Sending packet of 980 bytes to branch1 (198.51.100.21 port 655)
+2026-06-16T10:24:31+09:00 cloud tinc.office[3030]: Received packet of 640 bytes from branch1 (198.51.100.21 port 655)
+2026-06-16T10:24:35+09:00 cloud tinc.office[3030]: Sending packet of 200 bytes to laptop (192.0.2.50 port 655)

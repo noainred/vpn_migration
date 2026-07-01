@@ -1,0 +1,13 @@
+Jun 16 10:20:01 hq tinc.office[1010]: Connection with cloud (203.0.113.10 port 655) activated
+Jun 16 10:20:02 hq tinc.office[1010]: Connection with branch1 (198.51.100.21 port 655) activated
+Jun 16 10:20:03 hq tinc.office[1010]: Connection with branch2 (198.51.100.22 port 655) activated
+Jun 16 10:20:05 hq tinc.office[1010]: Got ADD_SUBNET from branch1 (198.51.100.21 port 655) for branch1 10.20.1.0/24
+Jun 16 10:20:05 hq tinc.office[1010]: Got ADD_SUBNET from branch2 (198.51.100.22 port 655) for branch2 10.20.2.0/24
+Jun 16 10:20:06 hq tinc.office[1010]: Got ADD_SUBNET from cloud (203.0.113.10 port 655) for cloud 10.30.0.0/24
+Jun 16 10:21:10 hq tinc.office[1010]: Sending packet of 84 bytes to branch1 (198.51.100.21 port 655)
+Jun 16 10:21:10 hq tinc.office[1010]: Received packet of 84 bytes from branch1 (198.51.100.21 port 655)
+Jun 16 10:21:12 hq tinc.office[1010]: Sending packet of 1200 bytes to branch1 (198.51.100.21 port 655)
+Jun 16 10:22:00 hq tinc.office[1010]: Sending packet of 540 bytes to branch2 (198.51.100.22 port 655)
+Jun 16 10:22:01 hq tinc.office[1010]: Received packet of 320 bytes from branch2 (198.51.100.22 port 655)
+Jun 16 10:23:30 hq tinc.office[1010]: Sending packet of 1500 bytes to cloud (203.0.113.10 port 655)
+Jun 16 10:23:31 hq tinc.office[1010]: Received packet of 1460 bytes from cloud (203.0.113.10 port 655)

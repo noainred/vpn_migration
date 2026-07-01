@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tinc → NSX VPN 마이그레이션 포탈</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="mode-collect">
+  <div id="liveBar" class="livebar hidden">
+    <span class="pulse"></span>
+    <span id="liveBarText">캡처 중…</span>
+    <button id="btnLiveStopBar">■ 캡처 중지</button>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⇄</span>
+      <div>
+        <h1>tinc → NSX VPN 마이그레이션 포탈</h1>
+        <p class="sub">tinc 로그를 업로드하면 노드 간 트래픽 · 라우팅 경로 · 정책 후보를 분석합니다</p>
+      </div>
+      <nav class="topnav">
+        <button class="topbtn mode-btn" id="btnModeCollect" data-mode="collect">📡 수집서버</button>
+        <button class="topbtn mode-btn" id="btnModeAnalyze" data-mode="analyze">🖥 분석 서버</button>
+        <button class="topbtn" id="btnSettings">⚙ 설정</button>
+      </nav>
+      <span class="appver" id="appVer" title="서버에 배포된 빌드">버전 확인 중…</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Settings (toggled by the ⚙ 설정 button) -->
+    <section class="panel settings hidden" id="settings">
+      <div class="settings-head">
+        <h2>⚙ 설정</h2>
+        <button class="ghost" id="btnSettingsClose">닫기 ✕</button>
+      </div>
+      <div class="settings-grid">
+
+        <div class="settings-card">
+          <h3>스냅샷 저장 (분/시/일)</h3>
+          <label class="field"><span>저장 위치(서버 경로)</span>
+            <input id="saveDir" type="text" placeholder="/var/lib/portal_data" /></label>
+          <label class="field"><span>호스트 라벨(저장 파일 접두사 · 비우면 서버 hostname 자동)</span>
+            <input id="hostLabel" type="text" placeholder="(자동: hostname) → 파일명 예: srv1_flow_day_….json" /></label>
+          <div class="toggle-row">
+            <label><input type="checkbox" id="persMinute" /> 분</label>
+            <label><input type="checkbox" id="persHour" /> 시간</label>
+            <label><input type="checkbox" id="persDay" /> 일</label>
+            <label>보관 <input id="persRetention" type="number" min="0" value="0" style="width:64px" /></label>
+            <label><input type="checkbox" id="persCompress" /> 압축(gzip)</label>
+          </div>
+          <div class="actions"><button id="btnPersistApply" class="primary">적용</button></div>
+          <p id="persistMsg" class="msg"></p>
+        </div>
+
+        <div class="settings-card">
+          <h3>분석 서버 경로 (기본)</h3>
+          <p class="hint">분석에 사용할 서버 경로를 미리 지정합니다 — 한 줄에 하나(파일 · 글롭 ·
+            디렉터리는 <b>하위 폴더까지 검색</b>). 지정하면 <b>분석 화면의 경로 입력란은 숨겨지고</b> 이 경로를 사용합니다.</p>
+          <textarea id="analysisPaths" rows="4" placeholder="/data/tinc/*.csv&#10;/opt/portal_data"></textarea>
+          <div class="actions"><button id="btnAnalysisPaths" class="primary">적용</button></div>
+          <p id="analysisPathsMsg" class="msg"></p>
+        </div>
+
+        <div class="settings-card">
+          <h3>캡처 제외 IP / 서브넷</h3>
+          <p class="hint">한 줄에 하나 — IP(<code>10.0.0.5</code>) 또는 CIDR(<code>10.93.0.0/16</code>).
+            라이브 캡처(tshark) 시 해당 트래픽을 제외합니다.</p>
+          <textarea id="captureExclude" rows="6" placeholder="10.0.0.5&#10;10.93.0.0/16"></textarea>
+          <label class="chkline"><input type="checkbox" id="captureResume" checked /> 재시작 시 기존 기록 이어가기(이어붙이기)</label>
+          <p class="hint">켜짐: 스캔을 멈췄다 다시 시작해도 누적을 이어서 기록. 꺼짐: 매번 새로 시작.</p>
+          <div class="actions"><button id="btnCaptureApply" class="primary">적용</button></div>
+          <p id="captureMsg" class="msg"></p>
+        </div>
+
+        <div class="settings-card">
+          <h3>자동 업데이트</h3>
+          <label class="chkline"><input type="checkbox" id="updEnabled" /> 자동 업데이트 사용</label>
+          <label class="field"><span>감시 폴더(새 번들이 놓이는 서버 경로, 선택)</span>
+            <input id="updWatchDir" type="text" placeholder="/var/lib/portal_updates" /></label>
+          <label class="field"><span>원격 소스 base URL (versions.json 위치, 선택)</span>
+            <input id="updRemoteBase" type="text" placeholder="https://.../download" /></label>
+          <label class="field"><span>토큰(비공개 소스용, 변경 시에만 입력)</span>
+            <input id="updToken" type="password" placeholder="••••••" /></label>
+          <div class="toggle-row">
+            <label><input type="checkbox" id="updAutoApply" /> 새 버전 자동 적용</label>
+            <label><input type="checkbox" id="updAutoRestart" /> 적용 후 자동 재시작(무인)</label>
+          </div>
+          <p class="hint">자동 적용 + 자동 재시작을 모두 켜면 사람 개입 없이 무인 업데이트됩니다(60초 주기 확인).</p>
+          <div class="actions">
+            <button id="btnUpdSave" class="ghost">설정 저장</button>
+            <button id="btnUpdCheck" class="ghost">지금 확인</button>
+            <button id="btnUpdApply" class="primary">업데이트 적용</button>
+            <button id="btnUpdRestart" class="ghost">재시작</button>
+          </div>
+          <p id="updMsg" class="msg"></p>
+          <p id="updStatus" class="hint"></p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Controls: file upload + live capture, side by side -->
+    <div class="controls-row">
+    <section class="panel controls controls-file">
+      <h2>1. 파일 업로드</h2>
+      <div id="dropzone" class="dropzone">
+        <p><strong>파일을 끌어다 놓거나</strong> 클릭하여 선택</p>
+        <p class="hint">tshark 캡처 CSV · 사전 집계 report.json · tinc 로그<br>.csv .json .log .txt — 다중 선택 가능</p>
+        <input id="fileInput" type="file" multiple accept=".log,.txt,.csv,.json,text/plain,application/json" hidden />
+      </div>
+      <p class="hint bignote">수십 GB 캡처는 서버에서 스트리밍 CLI로 처리 후 결과 JSON만 업로드하세요:<br>
+        <code>tinc-flow-analyzer -j 4 -f json -o report.json capture.csv</code></p>
+
+      <ul id="fileList" class="filelist"></ul>
+
+      <details class="advanced">
+        <summary>고급 옵션 — tinc 로그 전용 (서브넷 덤프 · 호스트 매핑 · 연도)</summary>
+        <label class="field">
+          <span>서브넷 소유 정보 (<code>tinc dump subnets</code> 출력, 선택)</span>
+          <textarea id="subnetDump" rows="3" placeholder="10.20.2.0/24 owner branch2"></textarea>
+        </label>
+        <label class="field">
+          <span>호스트 매핑 (OS호스트명=노드명, 줄바꿈 구분, 선택)</span>
+          <textarea id="hostMap" rows="2" placeholder="win-pc01=branch2"></textarea>
+        </label>
+        <label class="field inline">
+          <span>연도(타임스탬프에 연도 없을 때)</span>
+          <input id="year" type="number" value="2026" min="1970" max="2100" />
+        </label>
+      </details>
+
+      <div class="actions">
+        <button id="btnAnalyze" class="primary">분석하기</button>
+        <button id="btnSample" class="ghost">예제 불러오기</button>
+        <button id="btnClear" class="ghost">초기화</button>
+      </div>
+      <p id="msg" class="msg"></p>
+    </section>
+
+    <section class="panel controls controls-live">
+      <h2>📡 실시간 캡처 — 서버에서 tshark 실행</h2>
+      <p class="bignote">서버를 <code>--enable-capture</code> 로 실행해야 하며, 해당 호스트에
+        tshark와 캡처 권한이 필요합니다. 진짜 종단 간 IP는 VPN 인터페이스(<code>tun0</code>)에서,
+        노드(엔드포인트) IP는 물리 NIC(<code>ens192</code>)에서 캡처됩니다.</p>
+      <label class="field inline">
+        <span>인터페이스</span>
+        <input id="liveIface" type="text" placeholder="tun0" />
+      </label>
+      <div class="actions">
+        <button id="btnLiveStart" class="primary">실시간 시작</button>
+        <button id="btnLiveStop" class="ghost">중지</button>
+      </div>
+      <p id="liveStatus" class="msg"></p>
+    </section>
+    </div>
+
+    <!-- Server-side analysis job: process big captures / merge servers in the portal -->
+    <section class="panel controls controls-job">
+      <h2>🖥 서버에서 직접 분석 — 대용량 캡처 · 다중 서버 통합</h2>
+      <p class="bignote">서버에 저장된 캡처 CSV(<code>.csv</code>/<code>.gz</code>, 수십 GB)나 각 서버의
+        <code>portal_data</code> 디렉터리를 포탈이 <b>스트리밍 단일 패스</b>로 직접 분석합니다. 무거운 처리는
+        포탈과 <b>분리된 별도 프로세스</b>에서 수행되어 포탈을 멈추지 않으며, 포탈을 재시작/업그레이드해도 작업은 계속됩니다.
+        결과는 완료 시 아래 결과 화면에 자동으로 표시됩니다.</p>
+      <label class="field" id="jobPathsField"><span>서버 경로 — 한 줄에 하나 (파일 · 글롭 <code>/caps/*.csv.gz</code> · 디렉터리=하위 폴더까지 검색)</span>
+        <textarea id="jobPaths" rows="4" placeholder="/caps/capture-2026-06-18.csv&#10;/caps/*.csv.gz&#10;/opt/portal_data"></textarea></label>
+      <p class="hint hidden" id="jobPathsNote"></p>
+      <div class="toggle-row">
+        <label>병렬 워커 <input id="jobWorkers" type="number" min="1" max="64" value="4" style="width:64px" /></label>
+        <label><input type="checkbox" id="jobNoTime" /> 시간 파싱 생략(최대 처리량)</label>
+        <label><input type="checkbox" id="jobMerge" /> 다중 서버 통합(--merge · 통신쌍 중복 제거)</label>
+      </div>
+
+      <details class="advanced jobfilter">
+        <summary>필터 / 제외 옵션 — 조건에 맞는 데이터를 분석에서 제외하고 표시 개수 제한</summary>
+        <div class="toggle-row preset-row">
+          <label>저장된 필터
+            <select id="filterPreset"><option value="">— 선택 —</option></select></label>
+          <button id="btnPresetSave" class="ghost" type="button">현재 필터 저장</button>
+          <button id="btnPresetDelete" class="ghost" type="button">선택 삭제</button>
+          <span class="hint">선택하면 값이 채워집니다 · 분석은 [분석 시작] 클릭</span>
+        </div>
+        <div class="filter-grid">
+          <label class="field"><span>제외 출발지(source) IP/서브넷 — 한 줄에 하나</span>
+            <textarea id="fltSrc" rows="2" placeholder="10.0.0.5&#10;10.93.0.0/16"></textarea></label>
+          <label class="field"><span>제외 목적지(destination) IP/서브넷 — 한 줄에 하나</span>
+            <textarea id="fltDst" rows="2" placeholder="10.0.0.5&#10;10.93.0.0/16"></textarea></label>
+        </div>
+        <div class="toggle-row">
+          <span>제외 프로토콜:</span>
+          <label><input type="checkbox" id="fltTcp" /> TCP</label>
+          <label><input type="checkbox" id="fltUdp" /> UDP</label>
+          <label><input type="checkbox" id="fltIcmp" /> ICMP</label>
+          <label>기타 <input id="fltProtoExtra" type="text" placeholder="gre, 47" style="width:120px" /></label>
+        </div>
+        <div class="toggle-row">
+          <label>제외 포트 <input id="fltPorts" type="text" placeholder="443, 22, 3306" style="width:220px" /></label>
+          <label>표시 개수 제한(top N) <input id="fltLimit" type="number" min="0" value="0" style="width:80px" /></label>
+          <span class="hint">0 = 무제한</span>
+          <button id="btnFilterSave" class="ghost">옵션 저장</button>
+        </div>
+        <p class="hint">제외 = 분석에서 빼는 조건. 원본 CSV는 <b>패킷 단위</b>로 정확히 제외, 머지(집계본)는
+          <b>통신쌍/서비스 단위</b>로 제외합니다. 옵션은 분석 시작 시 자동 저장되어 다음에 다시 불러옵니다.</p>
+        <p id="filterMsg" class="msg"></p>
+      </details>
+
+      <div class="actions">
+        <button id="btnJobStart" class="primary">분석 시작</button>
+        <button id="btnJobCancel" class="ghost">중지</button>
+      </div>
+      <div id="jobProgress" class="job-progress hidden"></div>
+      <p id="jobMsg" class="msg"></p>
+      <p class="hint">보안: 포탈 프로세스 권한으로 서버 파일을 읽습니다. 기본 바인딩은 <code>127.0.0.1</code>(로컬 전용)이며,
+        외부에 노출할 경우 접근 제어를 두세요. 병렬 워커는 입력을 정확한 줄 경계로 분할 후 병합합니다(순차 결과와 비트 동일).</p>
+    </section>
+
+    <!-- Results -->
+    <section id="results" class="panel results hidden">
+      <div class="overview" id="overview"></div>
+
+      <div class="drilldown hidden" id="drilldown">
+        <div class="drill-head">
+          <b>🔎 단계 필터 (드릴다운)</b>
+          <span class="hint">결과를 1차 → 2차 → 3차… 순서로 좁혀 봅니다. 분석을 다시 돌리지 않고 즉시 적용. 포함만/제외 선택.</span>
+          <button class="chip" id="btnAddStage" type="button">+ 단계 추가</button>
+          <button class="chip" id="btnClearStages" type="button">전체 해제</button>
+        </div>
+        <div id="stageList"></div>
+        <div id="drillSummary" class="hint"></div>
+      </div>
+
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="status">수집상태</button>
+        <button class="tab" data-tab="graph">토폴로지</button>
+        <button class="tab" data-tab="subnet">서브넷/IP</button>
+        <button class="tab" data-tab="hosts">호스트 정보</button>
+        <button class="tab" data-tab="conv">통신쌍</button>
+        <button class="tab" data-tab="policies">수집된 정책</button>
+        <button class="tab" data-tab="activity">활동/유휴</button>
+        <button class="tab" data-tab="routing">라우팅</button>
+      </nav>
+
+      <div class="exportbar">
+        <span>Export:</span>
+        <button class="chip" id="btnJson">JSON</button>
+        <button class="chip" id="btnFlowsCsv">Flows CSV</button>
+        <button class="chip" id="btnPoliciesCsv">정책 CSV</button>
+        <button class="chip" id="btnDot">Graphviz DOT</button>
+        <button class="chip" id="btnSummary">요약 TXT</button>
+        <button class="chip" id="btnFullTopo">⛶ 토폴로지 전체화면</button>
+      </div>
+
+      <div class="tabpanel active" id="tab-status"></div>
+      <div class="tabpanel" id="tab-graph">
+        <div class="legend" id="graphLegend"></div>
+        <div id="graph" class="graph"></div>
+      </div>
+      <div class="tabpanel" id="tab-subnet"></div>
+      <div class="tabpanel" id="tab-hosts"></div>
+      <div class="tabpanel" id="tab-conv"></div>
+      <div class="tabpanel" id="tab-policies"></div>
+      <div class="tabpanel" id="tab-activity"></div>
+      <div class="tabpanel" id="tab-routing"></div>
+    </section>
+
+    <!-- System / storage dashboard (always visible) -->
+    <section class="panel sysmon" id="sysmon">
+      <h2>시스템 · 저장 대시보드</h2>
+      <div class="overview" id="sysCards"></div>
+      <div id="savedFiles"></div>
+      <pre id="filePreview" class="filepreview hidden"></pre>
+    </section>
+  </main>
+
+  <footer class="foot">
+    표준 라이브러리만으로 동작 · 외부 CDN 없음 · 모든 분석은 로컬에서 수행됩니다
+    <span id="appVerFoot"></span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

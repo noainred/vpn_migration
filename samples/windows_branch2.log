@@ -1,0 +1,9 @@
+Connection with cloud (203.0.113.10 port 655) activated
+Connection with hq (203.0.113.1 port 655) activated
+Got ADD_SUBNET from hq (203.0.113.1 port 655) for hq 10.10.0.0/16
+Got ADD_SUBNET from laptop (192.0.2.50 port 655) for laptop 10.40.0.5/32
+Sending packet of 320 bytes to hq (203.0.113.1 port 655)
+Received packet of 540 bytes from hq (203.0.113.1 port 655)
+Received packet of 300 bytes from laptop (192.0.2.50 port 655)
+Received packet of 300 bytes from laptop (192.0.2.50 port 655)
+Sending packet of 150 bytes to laptop (192.0.2.50 port 655)

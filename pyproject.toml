@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinc-route-analyzer"
+version = "1.0.0"
+description = "Analyse tinc VPN logs to map node-to-node traffic and routes for migration to NSX VPN"
+readme = "README.md"
+requires-python = ">=3.6"
+license = { text = "MIT" }
+keywords = ["tinc", "vpn", "nsx", "log-analysis", "network", "migration"]
+
+# Pure standard library — no runtime dependencies.
+dependencies = []
+
+[project.scripts]
+tinc-route-analyzer = "tinc_route_analyzer.cli:main"
+tinc-flow-analyzer = "tinc_route_analyzer.flowcsv:main"
+tinc-route-analyzer-web = "tinc_route_analyzer.web.server:main"
+
+[tool.setuptools]
+packages = ["tinc_route_analyzer", "tinc_route_analyzer.web"]
+
+[tool.setuptools.package-data]
+"tinc_route_analyzer.web" = ["static/*"]

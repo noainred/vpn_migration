@@ -1,0 +1,5 @@
+10.10.0.0/16 owner hq
+10.20.1.0/24 owner branch1
+10.20.2.0/24 owner branch2
+10.30.0.0/24 owner cloud
+10.40.0.5/32 owner laptop
